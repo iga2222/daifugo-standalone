@@ -1134,6 +1134,8 @@ function Board({
   log,
   rules,
   onRevealSync,
+  replayKey = null,
+  holdReveal = false,
 }: {
   players: BoardPlayer[];
   viewerId: string;
@@ -1152,6 +1154,14 @@ function Board({
   /** 順次表示が最新の履歴に追いついたかどうかを親へ知らせる。
    * 結果表示や手札の発光は、この「表示上の現在」に合わせて開始する。 */
   onRevealSync?: (caughtUp: boolean) => void;
+  /** このクライアントがゲーム開始を目撃したときに変わるキー（配札アニメと共通）。
+   * 変わったら表示を空に戻し、開始直後の手（先行するCPUの手を含む）を
+   * 最初から1手ずつ再生し直す。オンラインでは Board がロビー→対局の
+   * 切り替えでマウントされた時点で履歴が完成済みのため、この再生し直しが
+   * ないと「気づいたらCPUがもう出していた」状態になる。 */
+  replayKey?: string | null;
+  /** true の間は順次表示を進めない（配札アニメーションの再生中）。 */
+  holdReveal?: boolean;
 }) {
   // --- sequential reveal (moved here from FieldPile so banners share it) ---
   const STEP_MS = 640;
@@ -1165,6 +1175,8 @@ function Board({
     });
   const historyRef = useRef(history);
   historyRef.current = history;
+  const holdRef = useRef(false);
+  holdRef.current = holdReveal;
   const [disp, setDisp] = useState<HistoryView[]>(history);
   const dispRef = useRef(disp);
   const [ghost, setGhost] = useState<HistoryView[] | null>(null);
@@ -1173,9 +1185,14 @@ function Board({
   const steppingRef = useRef(false);
 
   const startStepping = (initialDelay: number) => {
-    if (steppingRef.current) return;
+    if (steppingRef.current || holdRef.current) return;
     steppingRef.current = true;
     const step = () => {
+      if (holdRef.current) {
+        // 配札アニメーション中は場の再生を待つ（配り終わってから手を見せる）
+        stepTimer.current = window.setTimeout(step, 200);
+        return;
+      }
       const target = historyRef.current;
       const cur = dispRef.current;
       const entry = hasPrefix(cur, target) ? target[cur.length] : undefined;
@@ -1194,6 +1211,27 @@ function Board({
       step();
     }
   };
+
+  // ゲーム開始を目撃したら、表示を空に戻して開始直後の手を最初から
+  // 再生し直す（先行するCPUの手がすでに履歴に含まれていても見せるため）。
+  const replayKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!replayKey || replayKey === replayKeyRef.current) return;
+    replayKeyRef.current = replayKey;
+    window.clearTimeout(stepTimer.current);
+    steppingRef.current = false;
+    dispRef.current = [];
+    setDisp([]);
+    setGhost(null);
+    startStepping(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replayKey]);
+
+  // 配札が終わった瞬間に、止めていた再生を開始する
+  useEffect(() => {
+    if (!holdReveal) startStepping(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [holdReveal]);
 
   useEffect(() => {
     const cur = dispRef.current;
@@ -3043,6 +3081,7 @@ function LocalGame({
         log={game.log}
         rules={rules}
         onRevealSync={setRevealCaughtUp}
+        holdReveal={deal.active}
       />
 
       {matchEnded ? (
@@ -3376,7 +3415,9 @@ function OnlineGame({
     view?.players ?? [],
     playerId,
     view?.myHand.length ?? 0,
-    !!view && view.status === "playing" && view.history.length === 0 && dealToken > 0,
+    // CPUが先に動いたゲームでも配札アニメは再生する（履歴が空かどうかは見ない）。
+    // 途中参加・再読込では dealToken が上がらないため、従来どおり再生されない。
+    !!view && view.status === "playing" && dealToken > 0,
   );
 
   const invalidate = () =>
@@ -4110,6 +4151,8 @@ function OnlineGame({
         log={view.log}
         rules={view.rules}
         onRevealSync={setRevealCaughtUp}
+        replayKey={dealToken > 0 ? `online-${view.code}-${dealToken}` : null}
+        holdReveal={deal.active}
       />
 
       {view.status === "finished" && view.matchEnded && revealCaughtUp ? (
