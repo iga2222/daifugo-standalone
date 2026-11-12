@@ -600,6 +600,54 @@ function prefersReducedMotion(): boolean {
   );
 }
 
+/** 表示済み履歴（disp）だけから「いま画面に見えている革命状態」を復元する。
+ * 革命の発生・鎮圧は各手の note に必ず残る（エンジン側で state.revolution の
+ * 切り替えと同時に記録される）ため、再生キューがその手に到達した時点で
+ * 初めて true / false が切り替わる。論理状態（最終状態）を直接使うと、
+ * CPU の手を1手ずつ表示している途中で色が先に変わってしまう。
+ * 途中参加・再読込で履歴が最初から全て表示済みの場合は、そのまま現在の
+ * 革命状態と一致する。 */
+function revolutionFromDisp(disp: HistoryView[]): boolean {
+  let rev = false;
+  for (const h of disp) {
+    const note = h.note ?? "";
+    if (note.includes("革命鎮圧")) rev = false;
+    else if (note.includes("革命発生")) rev = true;
+  }
+  return rev;
+}
+
+/** 自分の手番が「実際に入力可能になった瞬間」を検知して、短いバナーを出す。
+ * active は表示キューへの追いつき（revealCaughtUp）と配札完了まで含めた
+ * 判定を親が渡す前提。false→true の立ち上がりでのみバナーを表示し、
+ * 手番が終わったら即座に隠す（次の人の番に残らない）。 */
+function useMyTurnNotice(active: boolean): { showBanner: boolean; seq: number } {
+  const [showBanner, setShowBanner] = useState(false);
+  const [seq, setSeq] = useState(0);
+  const prevRef = useRef(false);
+  const timerRef = useRef(0);
+  useEffect(() => {
+    const prev = prevRef.current;
+    prevRef.current = active;
+    if (active && !prev) {
+      setSeq((s) => s + 1);
+      setShowBanner(true);
+      window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => setShowBanner(false), 1500);
+    } else if (!active) {
+      window.clearTimeout(timerRef.current);
+      setShowBanner(false);
+    }
+  }, [active]);
+  useEffect(
+    () => () => {
+      window.clearTimeout(timerRef.current);
+    },
+    [],
+  );
+  return { showBanner, seq };
+}
+
 function FieldPile({
   disp,
   ghost,
@@ -954,12 +1002,23 @@ function GameScreen({
   exitLabel,
   onExit,
   rules,
+  revolution = false,
+  myTurn = false,
+  showMyTurnBanner = false,
+  myTurnBannerSeq = 0,
   children,
 }: {
   statusText: string;
   exitLabel: string;
   onExit: () => void;
   rules: Rules;
+  /** 表示キューに追いついた革命状態。true の間フェルトが赤くなる。 */
+  revolution?: boolean;
+  /** 自分が実際に入力可能な手番（ステータス表示を金色に強調）。 */
+  myTurn?: boolean;
+  /** 自分の手番開始バナーを表示するか（useMyTurnNotice が管理）。 */
+  showMyTurnBanner?: boolean;
+  myTurnBannerSeq?: number;
   children: React.ReactNode;
 }) {
   const [showRules, setShowRules] = useState(false);
@@ -991,10 +1050,10 @@ function GameScreen({
   return (
     <div
       ref={rootRef}
-      className="felt-table h-dvh overflow-hidden flex flex-col relative"
+      className={`felt-table ${revolution ? "felt-table-revolution" : ""} h-dvh overflow-hidden flex flex-col relative`}
       style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)" }}
     >
-      <div className="ornate-band" />
+      <div className={`ornate-band ${revolution ? "ornate-band-revolution" : ""}`} />
       <div className="flex items-center justify-between px-3 pt-1.5 pb-0.5 shrink-0">
         <button
           type="button"
@@ -1006,7 +1065,11 @@ function GameScreen({
           ←
         </button>
         <p className="flex-1 text-center text-base sm:text-lg font-extrabold text-white drop-shadow-[0_2px_3px_rgba(0,0,0,0.85)] px-2">
-          {statusText}
+          {myTurn ? (
+            <span className="my-turn-status inline-block">{statusText}</span>
+          ) : (
+            statusText
+          )}
         </p>
         <button
           type="button"
@@ -1035,7 +1098,28 @@ function GameScreen({
         </div>
       )}
       <div className="flex-1 min-h-0 flex flex-col">{children}</div>
-      <div className="ornate-band" />
+      <div className={`ornate-band ${revolution ? "ornate-band-revolution" : ""}`} />
+      {showMyTurnBanner && (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed inset-x-0 top-[24%] z-[60] flex justify-center px-6"
+        >
+          <div
+            key={myTurnBannerSeq}
+            className="my-turn-banner rounded-2xl border-[3px] border-[#ffd34d] bg-[#3a2a05]/95 px-7 py-3 text-center shadow-2xl"
+          >
+            <p
+              className="text-3xl sm:text-4xl font-extrabold tracking-wide text-[#ffe9a8]"
+              style={{ textShadow: "0 2px 0 rgba(0,0,0,0.55)" }}
+            >
+              あなたの番です！
+            </p>
+            <p className="mt-0.5 text-xs font-extrabold text-white">
+              出せるカードが光っています
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1134,6 +1218,7 @@ function Board({
   log,
   rules,
   onRevealSync,
+  onDisplayedRevolution,
   replayKey = null,
   holdReveal = false,
 }: {
@@ -1154,6 +1239,10 @@ function Board({
   /** 順次表示が最新の履歴に追いついたかどうかを親へ知らせる。
    * 結果表示や手札の発光は、この「表示上の現在」に合わせて開始する。 */
   onRevealSync?: (caughtUp: boolean) => void;
+  /** 表示キューに追いついた時点の革命状態を親へ知らせる（場の色用）。
+   * 論理状態をそのまま使うと、CPU の手の再生途中で色が先に変わってしまう
+   * ため、革命バナーが出るタイミング（該当の手が表示された時点）に揃える。 */
+  onDisplayedRevolution?: (rev: boolean) => void;
   /** このクライアントがゲーム開始を目撃したときに変わるキー（配札アニメと共通）。
    * 変わったら表示を空に戻し、開始直後の手（先行するCPUの手を含む）を
    * 最初から1手ずつ再生し直す。オンラインでは Board がロビー→対局の
@@ -1276,6 +1365,18 @@ function Board({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [disp, history]);
 
+  // 画面に見えている革命状態: 再生が追いついているときは論理状態と一致する
+  // （最終確認として論理状態を使う）。再生途中は表示済みの手の note から
+  // 復元するので、革命バナーが表示されるのと同じタイミングで切り替わる。
+  // 11バック（backActive）はここには一切含めない。
+  const caughtUp = disp.length === history.length && hasPrefix(disp, history);
+  const dispRevolution = caughtUp ? revolution : revolutionFromDisp(disp);
+  const dispRevRef = useRef(onDisplayedRevolution);
+  dispRevRef.current = onDisplayedRevolution;
+  useEffect(() => {
+    dispRevRef.current?.(dispRevolution);
+  }, [dispRevolution]);
+
   // --- banner queue ---
   const queueRef = useRef<FxBanner[]>([]);
   const bannerRef = useRef<FxBanner | null>(null);
@@ -1382,7 +1483,7 @@ function Board({
         viewerId={viewerId}
         fieldCards={fieldCards}
         ownerName={ownerName}
-        revolution={revolution}
+        revolution={dispRevolution}
         backActive={backActive}
         lockSuit={lockSuit}
         numberLockNext={numberLockNext}
@@ -1670,6 +1771,7 @@ function ActionButtons({
   onPlay,
   revChoice = false,
   onPlayNoRev,
+  highlight = false,
 }: {
   canPass: boolean;
   canPlay: boolean;
@@ -1678,10 +1780,14 @@ function ActionButtons({
   onPlay: () => void;
   revChoice?: boolean;
   onPlayNoRev?: () => void;
+  /** 自分の手番（入力可能）な間、ボタン周りを金色に光らせる。 */
+  highlight?: boolean;
 }) {
   if (revChoice) {
     return (
-      <div className="px-4 pb-1.5 -mt-2 relative z-30 shrink-0">
+      <div
+        className={`px-4 pb-1.5 -mt-2 relative z-30 shrink-0 ${highlight ? "my-turn-actions" : ""}`}
+      >
         <p className="text-center text-xs font-extrabold text-[#ffe9a8] drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)] mb-1">
           革命を起こせます。どうしますか？
         </p>
@@ -1709,7 +1815,9 @@ function ActionButtons({
     );
   }
   return (
-    <div className="flex justify-center gap-3 px-4 pb-1.5 -mt-2 relative z-30 shrink-0">
+    <div
+      className={`flex justify-center gap-3 px-4 pb-1.5 -mt-2 relative z-30 shrink-0 ${highlight ? "my-turn-actions" : ""}`}
+    >
       <button
         type="button"
         onClick={onPass}
@@ -2638,6 +2746,8 @@ function LocalGame({
   // Boardの順次表示が最新の状態に追いついているか。追いつくまでは
   // 結果表示・手札の発光・持ち時間タイマーを開始しない。
   const [revealCaughtUp, setRevealCaughtUp] = useState(true);
+  // 表示キューに追いついた革命状態（場のフェルトの色はこちらで切り替える）
+  const [dispRev, setDispRev] = useState(false);
 
   const current = game.players[game.current]!;
   const pending = game.pending;
@@ -2938,6 +3048,18 @@ function LocalGame({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game, rules, revealCaughtUp]);
 
+  // 自分の手番の強調: 表示キューが追いつき、配札も終わって、実際に
+  // 入力できるようになった瞬間だけを「自分の番」とする（再生途中で先行しない）。
+  const myTurnActive =
+    game.status === "playing" &&
+    !game.exchange &&
+    !pending &&
+    myTurnHuman &&
+    viewer.id === current.id &&
+    revealCaughtUp &&
+    !deal.active;
+  const myTurnNotice = useMyTurnNotice(myTurnActive);
+
   // 持ち時間タイマー: 時間切れで状況に応じた自動処理（詰まらない形に）
   const timerActive =
     game.status === "playing" &&
@@ -3003,6 +3125,7 @@ function LocalGame({
   );
 
   const restart = () => {
+    setDispRev(false); // 次ゲームは緑から始める
     const ranks: Record<string, number> = {};
     for (const p of game.players) {
       if (p.finishRank !== null) ranks[p.id] = p.finishRank;
@@ -3023,6 +3146,7 @@ function LocalGame({
   };
 
   const resetMatch = () => {
+    setDispRev(false);
     setTotals({});
     setGameNo(1);
     setDealNonce((n) => n + 1);
@@ -3051,7 +3175,16 @@ function LocalGame({
             : "あなたの番です";
 
   return (
-    <GameScreen statusText={statusText} exitLabel="やめる" onExit={onExit} rules={rules}>
+    <GameScreen
+      statusText={statusText}
+      exitLabel="やめる"
+      onExit={onExit}
+      rules={rules}
+      revolution={dispRev}
+      myTurn={myTurnActive}
+      showMyTurnBanner={myTurnNotice.showBanner}
+      myTurnBannerSeq={myTurnNotice.seq}
+    >
       <ScoreStrip
         gameNo={gameNo}
         entries={game.players.map((p) => ({
@@ -3081,6 +3214,7 @@ function LocalGame({
         log={game.log}
         rules={rules}
         onRevealSync={setRevealCaughtUp}
+        onDisplayedRevolution={setDispRev}
         holdReveal={deal.active}
       />
 
@@ -3155,7 +3289,7 @@ function LocalGame({
                 }
               }
               seatNo={viewerSeatNo}
-              isTurn={current.id === viewerId && !pending}
+              isTurn={current.id === viewerId && !pending && revealCaughtUp && !deal.active}
               passed={game.passed.includes(viewerId)}
               totalPlayers={players.length}
               large
@@ -3166,7 +3300,7 @@ function LocalGame({
               }
             />
           </div>
-          <div className="pt-[84px]">
+          <div className={`pt-[84px] ${myTurnActive ? "my-turn-hand" : ""}`}>
             <FanHand
               cards={viewer.hand}
               selected={selected}
@@ -3253,6 +3387,7 @@ function LocalGame({
               onPlay={() => doPlay(true)}
               revChoice={revTrigger}
               onPlayNoRev={() => doPlay(false)}
+              highlight={myTurnActive}
             />
           )}
         </div>
@@ -3386,6 +3521,8 @@ function OnlineGame({
   // 結果表示・手札の発光・持ち時間タイマー・合計点の更新を始めない
   // （サーバー側で残りCPUの対局が一気に終わっても、表示は1手ずつ最後まで見せる）。
   const [revealCaughtUp, setRevealCaughtUp] = useState(true);
+  // 表示キューに追いついた革命状態（場のフェルトの色はこちらで切り替える）
+  const [dispRev, setDispRev] = useState(false);
   const [shownScores, setShownScores] = useState<Record<string, number>>({});
 
   const room = useQuery({
@@ -3403,9 +3540,11 @@ function OnlineGame({
     const prev = prevStatusRef.current;
     if (view.status === "playing" && prev !== "playing" && prev !== null) {
       setDealToken((t) => t + 1);
+      setDispRev(false); // 次ゲームは緑から始める（Boardの再生が追いつくまで）
     }
     if (view.status === "playing" && prev === null && view.history.length === 0) {
       setDealToken((t) => t + 1);
+      setDispRev(false);
     }
     prevStatusRef.current = view.status;
   }, [view?.status, view?.gameNumber]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -3698,6 +3837,20 @@ function OnlineGame({
     return new Set(sets.flatMap((s) => s.map((c) => c.id)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, playerId, revealCaughtUp]);
+
+  // 自分の手番の強調: サーバー側で自分の番になっていても、CPUの手の
+  // 再生表示が追いついて実際に入力できるようになるまでは開始しない
+  // （発光・タイマーと同じタイミングに揃える）。フックの数が変わらない
+  // よう、早期リターンより前で必ず計算・呼び出しすること。
+  const myTurnActiveOnline =
+    !!view &&
+    view.status === "playing" &&
+    !view.pending &&
+    !view.exchange &&
+    view.currentPlayerId === playerId &&
+    revealCaughtUp &&
+    !deal.active;
+  const myTurnNoticeOnline = useMyTurnNotice(myTurnActiveOnline);
 
   // 合計点の表示用スナップショット: 対局終了直後は、順次表示が最後まで
   // 追いつくまで合計点を更新しない（結果表示とタイミングをそろえる）。
@@ -4115,6 +4268,10 @@ function OnlineGame({
       exitLabel="部屋を出る"
       onExit={leave}
       rules={view.rules}
+      revolution={dispRev}
+      myTurn={myTurnActiveOnline}
+      showMyTurnBanner={myTurnNoticeOnline.showBanner}
+      myTurnBannerSeq={myTurnNoticeOnline.seq}
     >
       <p className="text-center text-xs font-bold text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
         合言葉 <span className="text-[#ffe9a8] tracking-[0.25em] text-sm">{view.code}</span>
@@ -4151,6 +4308,7 @@ function OnlineGame({
         log={view.log}
         rules={view.rules}
         onRevealSync={setRevealCaughtUp}
+        onDisplayedRevolution={setDispRev}
         replayKey={dealToken > 0 ? `online-${view.code}-${dealToken}` : null}
         holdReveal={deal.active}
       />
@@ -4241,7 +4399,7 @@ function OnlineGame({
                     }
               }
               seatNo={mySeatNo}
-              isTurn={isMyTurn}
+              isTurn={isMyTurn && revealCaughtUp && !deal.active}
               passed={view.passedIds.includes(playerId)}
               totalPlayers={players.length}
               large
@@ -4252,7 +4410,7 @@ function OnlineGame({
               }
             />
           </div>
-          <div className="pt-[84px]">
+          <div className={`pt-[84px] ${myTurnActiveOnline ? "my-turn-hand" : ""}`}>
             <FanHand
               cards={view.myHand}
               selected={selected}
@@ -4352,6 +4510,7 @@ function OnlineGame({
               onPlayNoRev={() =>
                 playMut.mutate({ cardIds: selected, revolution: false })
               }
+              highlight={myTurnActiveOnline}
             />
           )}
         </div>
