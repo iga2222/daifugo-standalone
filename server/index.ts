@@ -9,13 +9,17 @@
 //
 // The port comes from the PORT environment variable (Render sets it).
 //
-// Storage: rooms live in memory (a Map). That keeps the deployment free of
-// any external database, at the cost of losing in-progress rooms when the
-// process restarts — on Render's free plan the service sleeps after a
-// period of inactivity and wakes with empty memory, so treat rooms as
-// per-session. See README-DEPLOY.md for the trade-off and alternatives.
+// Storage: rooms are kept in memory (a Map) AND written through to a JSON
+// file on disk (data/rooms.json next to this package, or $ROOMS_FILE).
+// The file is reloaded at boot, so rooms survive the process going away —
+// on Render's free plan the service sleeps after a period of inactivity
+// and used to wake with empty memory, which made friends hit
+// "その合言葉の部屋が見つかりません" for rooms the host had just created.
+// A full redeploy may still reset the filesystem, so treat rooms as
+// long-lived but not eternal. See README-DEPLOY.md.
 
-import { join } from "node:path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   DEFAULT_RULES,
   advanceBots,
@@ -109,20 +113,59 @@ function capturePrev(data: RoomData) {
   }
 }
 
-// ---------- in-memory store ----------
+// ---------- room store (memory + write-through disk snapshot) ----------
 
 const rooms = new Map<string, RoomData>();
 const touchedAt = new Map<string, number>();
 const ROOM_TTL_MS = 12 * 60 * 60 * 1000;
 
+const ROOMS_FILE =
+  process.env.ROOMS_FILE ?? join(import.meta.dir, "..", "data", "rooms.json");
+
+/** Snapshots every room to disk so a sleep/restart does not wipe them. */
+function persistRooms() {
+  try {
+    mkdirSync(dirname(ROOMS_FILE), { recursive: true });
+    const tmp = `${ROOMS_FILE}.tmp`;
+    writeFileSync(
+      tmp,
+      JSON.stringify({
+        rooms: [...rooms.entries()],
+        touchedAt: [...touchedAt.entries()],
+      }),
+    );
+    renameSync(tmp, ROOMS_FILE);
+  } catch (err) {
+    // 保存できなくても対局は止めない（メモリ上では継続できる）
+    console.error("部屋データの保存に失敗しました", err);
+  }
+}
+
+/** Reloads the disk snapshot at boot (no-op when there is none yet). */
+function restoreRooms() {
+  try {
+    const parsed = JSON.parse(readFileSync(ROOMS_FILE, "utf8")) as {
+      rooms?: [string, RoomData][];
+      touchedAt?: [string, number][];
+    };
+    for (const [code, data] of parsed.rooms ?? []) rooms.set(code, data);
+    for (const [code, at] of parsed.touchedAt ?? []) touchedAt.set(code, at);
+  } catch {
+    /* スナップショットが無い／壊れている場合は空から始める */
+  }
+}
+
 function sweepOldRooms() {
   const now = Date.now();
+  let removed = false;
   for (const [code, at] of touchedAt) {
     if (now - at > ROOM_TTL_MS) {
       rooms.delete(code);
       touchedAt.delete(code);
+      removed = true;
     }
   }
+  if (removed) persistRooms();
 }
 
 /** Returns a deep copy, mirroring the Muse version's DB round-trip. */
@@ -144,6 +187,7 @@ function loadRoom(code: string): RoomData | null {
 function saveRoom(code: string, data: RoomData) {
   rooms.set(code, JSON.parse(JSON.stringify(data)) as RoomData);
   touchedAt.set(code, Date.now());
+  persistRooms();
 }
 
 function makeCode(): string {
@@ -276,10 +320,14 @@ const handlers: Record<string, (args: Args) => unknown> = {
     const playerId = str(args.playerId).slice(0, 64);
     const name = str(args.name).slice(0, 16) || "プレイヤー";
     if (!playerId) return { ok: false, reason: "プレイヤー情報がありません" };
+    // 空いている合言葉が見つかるまで引き直す（上限まで引いても重なったら
+    // 既存の部屋を上書きせず、作成エラーとして返す）
     let code = makeCode();
-    for (let i = 0; i < 10; i++) {
-      if (!rooms.has(code)) break;
+    for (let i = 0; i < 500 && rooms.has(code); i++) {
       code = makeCode();
+    }
+    if (rooms.has(code)) {
+      return { ok: false, reason: "部屋を作れませんでした。もう一度お試しください" };
     }
     const data: RoomData = {
       hostId: playerId,
@@ -526,6 +574,9 @@ const handlers: Record<string, (args: Args) => unknown> = {
 };
 
 // ---------- HTTP server ----------
+
+restoreRooms();
+sweepOldRooms();
 
 const PORT = Number(process.env.PORT ?? 3000);
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
