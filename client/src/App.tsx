@@ -1130,6 +1130,16 @@ interface FxBanner {
   title: string;
   sub?: string;
   tone: "gold" | "red" | "blue" | "green";
+  /** "finish" = あがり演出（プレイヤー名＋称号の2段組・大きめ・長め表示）。 */
+  kind?: "effect" | "finish";
+  /** あがり演出用: 上がった人の名前。 */
+  playerName?: string;
+  /** あがり演出用: 最終順位。 */
+  rankPos?: number;
+  /** あがり演出用: アバター画像（設定している人だけ名前の横に小さく出す）。 */
+  avatar?: string | null;
+  /** 重複排除キー（称号が同じ平民どうしでも1人ずつ表示するため）。 */
+  dedupeKey?: string;
 }
 
 const BANNER_TONE: Record<FxBanner["tone"], string> = {
@@ -1219,6 +1229,7 @@ function Board({
   rules,
   onRevealSync,
   onDisplayedRevolution,
+  onFinishFxBusy,
   replayKey = null,
   holdReveal = false,
 }: {
@@ -1243,6 +1254,9 @@ function Board({
    * 論理状態をそのまま使うと、CPU の手の再生途中で色が先に変わってしまう
    * ため、革命バナーが出るタイミング（該当の手が表示された時点）に揃える。 */
   onDisplayedRevolution?: (rev: boolean) => void;
+  /** あがり演出が表示待ち・表示中の間 true を親へ知らせる。
+   * 親はその間、結果表示への切り替えを待つ（演出が結果画面に隠れないため）。 */
+  onFinishFxBusy?: (busy: boolean) => void;
   /** このクライアントがゲーム開始を目撃したときに変わるキー（配札アニメと共通）。
    * 変わったら表示を空に戻し、開始直後の手（先行するCPUの手を含む）を
    * 最初から1手ずつ再生し直す。オンラインでは Board がロビー→対局の
@@ -1268,6 +1282,21 @@ function Board({
   holdRef.current = holdReveal;
   const [disp, setDisp] = useState<HistoryView[]>(history);
   const dispRef = useRef(disp);
+  // あがり演出用: 順位が確定した人を「上がりの手が表示される位置（atDisp）」
+  // と一緒に待ち行列へ入れ、表示キューがそこへ到達したらバナーを出す。
+  const pendingFinishRef = useRef<
+    {
+      playerId: string;
+      name: string;
+      rank: number;
+      total: number;
+      avatar: string | null;
+      atDisp: number;
+    }[]
+  >([]);
+  const shownFinishRef = useRef<Set<string>>(new Set());
+  // あがり演出の表示中は次の手の再生を止める（演出を見せてから次へ進む）。
+  const finishHoldRef = useRef(false);
   const [ghost, setGhost] = useState<HistoryView[] | null>(null);
   const ghostTimer = useRef(0);
   const stepTimer = useRef(0);
@@ -1279,6 +1308,11 @@ function Board({
     const step = () => {
       if (holdRef.current) {
         // 配札アニメーション中は場の再生を待つ（配り終わってから手を見せる）
+        stepTimer.current = window.setTimeout(step, 200);
+        return;
+      }
+      if (finishHoldRef.current) {
+        // あがり演出の表示中は次の手を見せない（演出→次の手の順で見せる）
         stepTimer.current = window.setTimeout(step, 200);
         return;
       }
@@ -1312,6 +1346,8 @@ function Board({
     dispRef.current = [];
     setDisp([]);
     setGhost(null);
+    pendingFinishRef.current = [];
+    shownFinishRef.current = new Set();
     startStepping(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replayKey]);
@@ -1334,6 +1370,8 @@ function Board({
         .filter((h) => h.cards && h.cards.length > 0);
       dispRef.current = [];
       setDisp([]);
+      pendingFinishRef.current = [];
+      shownFinishRef.current = new Set();
       if (oldPlays.length > 0 && !prefersReducedMotion()) {
         setGhost(oldPlays);
         window.clearTimeout(ghostTimer.current);
@@ -1383,11 +1421,15 @@ function Board({
   const [banner, setBanner] = useState<FxBanner | null>(null);
   const [bannerSeq, setBannerSeq] = useState(0);
   const pushBanners = (bs: FxBanner[]) => {
-    if (prefersReducedMotion()) return;
+    const reduced = prefersReducedMotion();
     for (const b of bs) {
+      // モーション抑制時は効果バナーを出さない。あがり演出だけは順位の
+      // お知らせとして静止表示する（アニメーションはCSS側で止まる）。
+      if (reduced && b.kind !== "finish") continue;
       const q = queueRef.current;
-      if (bannerRef.current?.title === b.title) continue;
-      if (q[q.length - 1]?.title === b.title) continue;
+      const keyOf = (x: FxBanner) => x.dedupeKey ?? x.title;
+      if (bannerRef.current && keyOf(bannerRef.current) === keyOf(b)) continue;
+      if (q[q.length - 1] && keyOf(q[q.length - 1]!) === keyOf(b)) continue;
       q.push(b);
     }
     if (!bannerRef.current) {
@@ -1403,15 +1445,31 @@ function Board({
   pushRef.current = pushBanners;
 
   useEffect(() => {
+    finishHoldRef.current = banner?.kind === "finish";
     if (!banner) return;
     const t = window.setTimeout(() => {
       const nxt = queueRef.current.shift() ?? null;
       bannerRef.current = nxt;
       setBanner(nxt);
       if (nxt) setBannerSeq((s) => s + 1);
-    }, 1180);
+    }, banner.kind === "finish" ? 1500 : 1180);
     return () => window.clearTimeout(t);
   }, [banner]);
+
+  // あがり演出が待ち・表示中かどうかを親へ知らせる（結果表示を待たせるため）。
+  const finishBusyRef = useRef(onFinishFxBusy);
+  finishBusyRef.current = onFinishFxBusy;
+  const lastFinishBusyRef = useRef(false);
+  useEffect(() => {
+    const busy =
+      banner?.kind === "finish" ||
+      queueRef.current.some((b) => b.kind === "finish") ||
+      pendingFinishRef.current.length > 0;
+    if (busy !== lastFinishBusyRef.current) {
+      lastFinishBusyRef.current = busy;
+      finishBusyRef.current?.(busy);
+    }
+  });
 
   // Effect banners, fired as each history entry is revealed.
   const prevDispRef = useRef<HistoryView[]>(disp);
@@ -1426,27 +1484,83 @@ function Board({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [disp]);
 
-  // Finish banners: a player's finishRank flips from null to a rank.
+  // あがり演出: 順位の確定（finishRank が null → 順位）を検知したら、
+  // その人の「上がりの手」が表示キューで表示される位置（atDisp）を記録
+  // して待ち行列に入れ、表示がそこへ到達した時点でバナーキューへ流す。
+  // 順位はエンジンが最終順位として確定させた値を使う: 都落ち・下剋上・
+  // 残り1人の最下位確定も、原因となった上がりと同じ状態更新で一括して
+  // 確定するため、ここで出す称号が後から食い違うことはない。
+  // 同時に複数人確定した場合は、原因の手にそろえて順位順に1人ずつ出す。
+  const flushPendingFinishes = () => {
+    const pend = pendingFinishRef.current;
+    if (pend.length === 0) return;
+    const ready = pend
+      .filter((f) => f.atDisp <= dispRef.current.length)
+      .sort((a, b) => a.rank - b.rank);
+    if (ready.length === 0) return;
+    pendingFinishRef.current = pend.filter((f) => !ready.includes(f));
+    pushRef.current(
+      ready.map((f) => ({
+        kind: "finish" as const,
+        dedupeKey: `finish:${f.playerId}:${f.rank}`,
+        title: rankLabel(f.rank, f.total),
+        playerName: f.name,
+        rankPos: f.rank,
+        avatar: f.avatar,
+        tone: "gold" as const,
+      })),
+    );
+  };
+  const flushFinishRef = useRef(flushPendingFinishes);
+  flushFinishRef.current = flushPendingFinishes;
+
   const prevRanksRef = useRef<Map<string, number | null> | null>(null);
   useEffect(() => {
     const prev = prevRanksRef.current;
     const next = new Map(players.map((p) => [p.id, p.finishRank]));
     if (prev) {
-      for (const p of players) {
-        if (p.finishRank !== null && prev.get(p.id) === null) {
-          pushRef.current([
-            {
-              title: `${rankLabel(p.finishRank, players.length)}！`,
-              sub: `${p.name}さんが${p.finishRank}位で上がり`,
-              tone: "gold",
-            },
-          ]);
+      const fresh = players
+        .filter(
+          (p) =>
+            p.finishRank !== null &&
+            prev.get(p.id) === null &&
+            !shownFinishRef.current.has(p.id),
+        )
+        .sort((a, b) => (a.finishRank ?? 0) - (b.finishRank ?? 0));
+      if (fresh.length > 0) {
+        const hist = historyRef.current;
+        // 各人の最後の履歴エントリ = 上がりの手（7渡し・10捨ての受け渡し
+        // エントリも含む）。専用エントリが無い決着（4止め等）は履歴末尾。
+        const atOf = (playerId: string) => {
+          for (let i = hist.length - 1; i >= 0; i--) {
+            if (hist[i]!.playerId === playerId) return i + 1;
+          }
+          return hist.length;
+        };
+        // 同時確定は原因となった手の位置にそろえる（一番遅い位置を採用）。
+        const batchAt = Math.max(...fresh.map((p) => atOf(p.id)));
+        for (const p of fresh) {
+          shownFinishRef.current.add(p.id);
+          pendingFinishRef.current.push({
+            playerId: p.id,
+            name: p.name,
+            rank: p.finishRank!,
+            total: players.length,
+            avatar: p.avatar ?? null,
+            atDisp: batchAt,
+          });
         }
+        flushFinishRef.current();
       }
     }
     prevRanksRef.current = next;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [players]);
+
+  // 表示キューが進むたびに、到達したあがり演出をバナーキューへ流す。
+  useEffect(() => {
+    flushFinishRef.current();
+  }, [disp]);
 
   // Log-driven banners （都落ち / 下剋上 / 4止め / 天変地異）: count-based so the
   // online log (last 10 lines) sliding window doesn't re-fire old lines.
@@ -1490,27 +1604,68 @@ function Board({
         direction={direction}
       />
       <LogList log={log} />
-      {banner && (
-        <div
-          aria-hidden
-          className="pointer-events-none fixed inset-0 z-[65] flex items-center justify-center px-6"
-        >
+      {banner &&
+        (banner.kind === "finish" ? (
           <div
-            key={bannerSeq}
-            className={`effect-banner rounded-2xl border-[3px] bg-[#0a2e1c]/95 px-7 py-3.5 text-center shadow-2xl ${BANNER_TONE[banner.tone]}`}
+            aria-hidden
+            className="pointer-events-none fixed inset-0 z-[66] flex items-center justify-center px-6"
           >
-            <p
-              className="text-4xl sm:text-5xl font-extrabold tracking-wide"
-              style={{ textShadow: "0 2px 0 rgba(0,0,0,0.55), 0 0 22px rgba(0,0,0,0.35)" }}
+            <div
+              key={bannerSeq}
+              className="finish-banner gold-frame rounded-3xl bg-[#0a2e1c]/95 px-8 py-5 text-center shadow-2xl"
             >
-              {banner.title}
-            </p>
-            {banner.sub && (
-              <p className="mt-1 text-sm font-extrabold text-white">{banner.sub}</p>
-            )}
+              <div className="flex items-center justify-center gap-2.5">
+                {banner.avatar && (
+                  <img
+                    src={banner.avatar}
+                    alt=""
+                    className="h-10 w-10 shrink-0 rounded-full border-2 border-[#ffd34d] object-cover"
+                  />
+                )}
+                <p
+                  className="text-2xl sm:text-3xl font-extrabold text-white"
+                  style={{ textShadow: "0 2px 0 rgba(0,0,0,0.55)" }}
+                >
+                  {banner.playerName}
+                </p>
+              </div>
+              <p
+                className="gold-text mt-1 text-6xl sm:text-7xl font-extrabold tracking-wide"
+                style={{
+                  textShadow:
+                    "0 3px 0 rgba(0,0,0,0.55), 0 0 30px rgba(255,211,77,0.45)",
+                }}
+              >
+                {banner.title}
+              </p>
+              {banner.rankPos != null && (
+                <p className="mt-1.5 text-sm font-extrabold text-[#ffe9a8]">
+                  {banner.rankPos}位で上がり！
+                </p>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        ) : (
+          <div
+            aria-hidden
+            className="pointer-events-none fixed inset-0 z-[65] flex items-center justify-center px-6"
+          >
+            <div
+              key={bannerSeq}
+              className={`effect-banner rounded-2xl border-[3px] bg-[#0a2e1c]/95 px-7 py-3.5 text-center shadow-2xl ${BANNER_TONE[banner.tone]}`}
+            >
+              <p
+                className="text-4xl sm:text-5xl font-extrabold tracking-wide"
+                style={{ textShadow: "0 2px 0 rgba(0,0,0,0.55), 0 0 22px rgba(0,0,0,0.35)" }}
+              >
+                {banner.title}
+              </p>
+              {banner.sub && (
+                <p className="mt-1 text-sm font-extrabold text-white">{banner.sub}</p>
+              )}
+            </div>
+          </div>
+        ))}
     </>
   );
 }
@@ -2748,6 +2903,8 @@ function LocalGame({
   const [revealCaughtUp, setRevealCaughtUp] = useState(true);
   // 表示キューに追いついた革命状態（場のフェルトの色はこちらで切り替える）
   const [dispRev, setDispRev] = useState(false);
+  // あがり演出が表示待ち・表示中の間は結果表示への切り替えを待つ
+  const [finishFxBusy, setFinishFxBusy] = useState(false);
 
   const current = game.players[game.current]!;
   const pending = game.pending;
@@ -3215,6 +3372,7 @@ function LocalGame({
         rules={rules}
         onRevealSync={setRevealCaughtUp}
         onDisplayedRevolution={setDispRev}
+        onFinishFxBusy={setFinishFxBusy}
         holdReveal={deal.active}
       />
 
@@ -3244,7 +3402,7 @@ function LocalGame({
             </button>
           </div>
         </FinalResults>
-      ) : game.status === "finished" && revealCaughtUp ? (
+      ) : game.status === "finished" && revealCaughtUp && !finishFxBusy ? (
         <ResultsPanel
           gameNo={gameNo}
           total={game.players.length}
@@ -3523,6 +3681,8 @@ function OnlineGame({
   const [revealCaughtUp, setRevealCaughtUp] = useState(true);
   // 表示キューに追いついた革命状態（場のフェルトの色はこちらで切り替える）
   const [dispRev, setDispRev] = useState(false);
+  // あがり演出が表示待ち・表示中の間は結果表示への切り替えを待つ
+  const [finishFxBusy, setFinishFxBusy] = useState(false);
   const [shownScores, setShownScores] = useState<Record<string, number>>({});
 
   const room = useQuery({
@@ -4309,11 +4469,12 @@ function OnlineGame({
         rules={view.rules}
         onRevealSync={setRevealCaughtUp}
         onDisplayedRevolution={setDispRev}
+        onFinishFxBusy={setFinishFxBusy}
         replayKey={dealToken > 0 ? `online-${view.code}-${dealToken}` : null}
         holdReveal={deal.active}
       />
 
-      {view.status === "finished" && view.matchEnded && revealCaughtUp ? (
+      {view.status === "finished" && view.matchEnded && revealCaughtUp && !finishFxBusy ? (
         <FinalResults
           gameNo={view.gameNumber}
           entries={view.players.map((p) => ({
@@ -4339,7 +4500,7 @@ function OnlineGame({
             </p>
           )}
         </FinalResults>
-      ) : view.status === "finished" && revealCaughtUp ? (
+      ) : view.status === "finished" && revealCaughtUp && !finishFxBusy ? (
         <ResultsPanel
           gameNo={view.gameNumber}
           total={view.players.length}
