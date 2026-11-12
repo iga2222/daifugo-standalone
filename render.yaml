@@ -1,0 +1,13 @@
+# Render Blueprint — このファイルがあるリポジトリを Render で読み込むと、
+# 無料プランの Web Service が自動で作成されます。
+# ポート番号は Render が環境変数 PORT で自動設定します（アプリ側は PORT を読んで待ち受けます）。
+services:
+  - type: web
+    name: daifugo
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
