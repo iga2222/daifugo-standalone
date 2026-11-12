@@ -87,6 +87,52 @@
   background:
     radial-gradient(ellipse 95% 62% at 50% 40%, #d3ec4a 0%, #9ccc2e 26%, #4da324 52%, #1c6b1c 76%, #0a4713 100%);
 }
+/* 革命中はフェルトを深い赤〜赤茶に変える（カード自体の色は変えない）。
+   切り替えのタイミングは表示キューに追いついた革命状態に合わせる。 */
+.felt-table-revolution {
+  background:
+    radial-gradient(ellipse 95% 62% at 50% 40%, #eda26a 0%, #d2603a 24%, #a83226 50%, #701b14 76%, #420d09 100%);
+}
+.ornate-band-revolution {
+  background:
+    repeating-linear-gradient(45deg, rgba(255,215,120,0.16) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(-45deg, rgba(255,215,120,0.16) 0 6px, transparent 6px 12px),
+    linear-gradient(#8e241c, #5e130e) !important;
+}
+
+/* ---- 自分の番の強調（手番の間ずっと弱く光る） ---- */
+@keyframes my-turn-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(255,211,77,0.55), 0 0 14px 2px rgba(255,190,50,0.35); }
+  50% { box-shadow: 0 0 0 3px rgba(255,220,120,0.95), 0 0 26px 6px rgba(255,190,50,0.6); }
+}
+.my-turn-hand {
+  border-radius: 18px;
+  background: rgba(255, 211, 77, 0.07);
+  animation: my-turn-pulse 1.6s ease-in-out infinite;
+}
+.my-turn-actions {
+  border-radius: 16px;
+  background: rgba(255, 205, 60, 0.08);
+  animation: my-turn-pulse 1.6s ease-in-out infinite;
+}
+.my-turn-status {
+  background: linear-gradient(#ffd873, #f0a92e);
+  color: #4a3205;
+  text-shadow: none;
+  border-radius: 9999px;
+  padding: 2px 16px;
+  box-shadow: 0 0 0 2px rgba(255,240,190,0.8), 0 0 18px rgba(255,200,60,0.55);
+}
+
+/* 自分の番が始まった瞬間だけ出す短いバナー */
+@keyframes my-turn-banner-in {
+  0% { opacity: 0; transform: scale(0.7) translateY(12px); }
+  14% { opacity: 1; transform: scale(1.06) translateY(0); }
+  24% { transform: scale(1); }
+  80% { opacity: 1; transform: scale(1) translateY(0); }
+  100% { opacity: 0; transform: scale(0.97) translateY(-6px); }
+}
+.my-turn-banner { animation: my-turn-banner-in 1.45s ease both; }
 .ornate-band {
   height: 16px;
   flex: none;
@@ -231,10 +277,16 @@
 .deck-pulse { animation: deck-pulse 0.9s ease-in-out infinite; }
 
 @media (prefers-reduced-motion: reduce) {
-  .card-pop, .chip-pop, .pile-exit, .turn-ring, .panel-in, .effect-banner, .result-row, .deck-pulse { animation: none !important; }
+  .card-pop, .chip-pop, .pile-exit, .turn-ring, .panel-in, .effect-banner, .result-row, .deck-pulse, .my-turn-banner { animation: none !important; }
   /* 発光の脈動は止め、静止した光枠だけ残す */
   .playable-glow {
     animation: none !important;
     box-shadow: 0 0 0 2px rgba(255,216,115,0.95), 0 0 14px 4px rgba(255,205,80,0.7);
   }
+  .my-turn-hand, .my-turn-actions {
+    animation: none !important;
+    box-shadow: 0 0 0 2px rgba(255,211,77,0.8), 0 0 16px 3px rgba(255,190,50,0.5);
+  }
+  /* バナーはアニメーションなしで表示だけする（フェードアウトはJS側のタイマーで消す） */
+  .my-turn-banner { opacity: 1; }
 }
