@@ -3672,6 +3672,7 @@ function OnlineGame({
   const [selected, setSelected] = useState<string[]>([]);
   const [chosenRank, setChosenRank] = useState<number | null>(null);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmCreate, setConfirmCreate] = useState(false);
   const [dealToken, setDealToken] = useState(0);
@@ -3692,6 +3693,19 @@ function OnlineGame({
     refetchInterval: 1800,
   });
   const view: RoomView | undefined = room.data;
+
+  // 端末に保存していた合言葉の部屋が消えていたら（サーバーの再起動などで
+  // 消えることがある）、保存だけ先に消しておく。次に開いたときも同じ
+  // 「見つかりません」画面に直行しないようにするため。
+  const roomMissing = !!view && !view.found;
+  useEffect(() => {
+    if (!roomMissing) return;
+    try {
+      localStorage.removeItem("daifugo-room");
+    } catch {
+      /* ignore */
+    }
+  }, [roomMissing]);
 
   // ゲーム開始（lobby/finished → playing）を検知して配札トークンを進める
   const prevStatusRef = useRef<string | null>(null);
@@ -3725,6 +3739,7 @@ function OnlineGame({
   const create = async () => {
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const res = await api.createRoom({
         playerId,
@@ -3732,6 +3747,10 @@ function OnlineGame({
         rules,
         avatar: sharedAvatar,
       });
+      if (!res.code || res.code.length !== 4) {
+        setError("部屋を作れませんでした。もう一度お試しください");
+        return;
+      }
       localStorage.setItem("daifugo-room", res.code);
       setCode(res.code);
     } catch {
@@ -3748,6 +3767,7 @@ function OnlineGame({
     }
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       const res = await api.joinRoom({
         playerId,
@@ -4181,6 +4201,11 @@ function OnlineGame({
             入室する
           </button>
         </div>
+        {notice && (
+          <p className="rounded-xl bg-[#ffd34d]/15 border border-[#ffd34d]/50 px-4 py-3 text-center text-sm font-bold text-[#ffe9a8]">
+            {notice}
+          </p>
+        )}
         {error && <p className="text-center text-sm font-bold text-[#ff9d7a]">{error}</p>}
       </div>
     );
@@ -4210,13 +4235,33 @@ function OnlineGame({
             ? "その合言葉の部屋が見つかりませんでした"
             : "この部屋のメンバーではありません"}
         </p>
-        <button
-          type="button"
-          onClick={leave}
-          className="rounded-xl bg-[#ffd34d] text-[#4a3205] font-extrabold px-6 py-3"
-        >
-          もどる
-        </button>
+        <p className="text-sm font-bold text-[var(--dim)] leading-6 max-w-md mx-auto">
+          {!view.found
+            ? "作られてから時間がたっていたり、サーバーが再起動したりすると、部屋が消えていることがあります。ホストに合言葉を確認するか、新しい部屋を作ってください。"
+            : "この端末のプレイヤー情報では、その部屋のメンバーとして登録されていません。部屋を作り直すか、合言葉を入力し直してください。"}
+        </p>
+        <div className="flex flex-col items-center gap-3 pt-2">
+          <button
+            type="button"
+            onClick={() => {
+              setCode(null);
+              setSelected([]);
+              setNotice(
+                "前回の部屋は終了していました。新しい部屋を作るか、友達に合言葉を聞いて入力してください。",
+              );
+            }}
+            className="btn-orange rounded-xl font-extrabold px-6 py-3"
+          >
+            部屋を作る・入る画面へ
+          </button>
+          <button
+            type="button"
+            onClick={leave}
+            className="rounded-full bg-[var(--surface)] border border-[var(--border)] px-5 py-2 text-sm font-bold text-[var(--text)]"
+          >
+            ホームへもどる
+          </button>
+        </div>
       </div>
     );
   }
