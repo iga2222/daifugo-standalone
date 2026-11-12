@@ -1,0 +1,240 @@
+@import url('https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@500;700;800&display=swap');
+@import "tailwindcss";
+@import "tailwindcss-safe-area";
+
+@theme {
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 14px;
+  --text-sm--line-height: 20px;
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+  --text-lg: 18px;
+  --text-lg--line-height: 28px;
+  --text-xl: 20px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 30px;
+  --text-3xl--line-height: 36px;
+  --text-4xl: 36px;
+  --text-4xl--line-height: 40px;
+  --text-5xl: 48px;
+  --text-5xl--line-height: 52px;
+  --font-rounded: "M PLUS Rounded 1c", system-ui, sans-serif;
+}
+
+:root {
+  color-scheme: dark;
+  --bg: #07271e;
+  --surface: #0e4a37;
+  --surface2: #0a3828;
+  --text: #f5eedd;
+  --dim: #a8c3b4;
+  --border: #1d6a4f;
+  --accent: #c9a86a;
+  --accent-text: #07271e;
+  --red: #c0392b;
+  --radius: 14px;
+  --space-surface: var(--surface);
+  --space-surface-alt: var(--surface2);
+  --space-muted: var(--dim);
+  --space-border: var(--border);
+  --space-accent: var(--accent);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #0b3d2e;
+    --surface: #125943;
+    --surface2: #0d4633;
+  }
+}
+
+@layer base {
+  button, [role="button"], select, summary, input:not([type="checkbox"], [type="radio"]) {
+    min-height: 2.5rem;
+  }
+  body {
+    font-family: var(--font-rounded);
+  }
+}
+
+@keyframes pop-in {
+  0% { transform: translateY(10px) scale(0.92); opacity: 0; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+.card-pop { animation: pop-in 0.22s ease-out; }
+
+@keyframes pulse-ring {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(255,214,90,0.95), 0 0 18px rgba(255,200,60,0.55); }
+  50% { box-shadow: 0 0 0 6px rgba(255,214,90,0.4), 0 0 26px rgba(255,200,60,0.3); }
+}
+.turn-ring { animation: pulse-ring 1.4s ease-in-out infinite; }
+
+/* 出せるカードの強調（自分の手番のみ）: 金の光枠＋ほのかな発光 */
+@keyframes playable-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(255,216,115,0.95), 0 0 12px 3px rgba(255,205,80,0.55); }
+  50% { box-shadow: 0 0 0 2.5px rgba(255,226,150,1), 0 0 20px 6px rgba(255,205,80,0.85); }
+}
+.playable-glow {
+  border-radius: 7px;
+  animation: playable-pulse 1.15s ease-in-out infinite;
+}
+
+/* ---- casino table look (reference design) ---- */
+.felt-table {
+  background:
+    radial-gradient(ellipse 95% 62% at 50% 40%, #d3ec4a 0%, #9ccc2e 26%, #4da324 52%, #1c6b1c 76%, #0a4713 100%);
+}
+.ornate-band {
+  height: 16px;
+  flex: none;
+  background:
+    repeating-linear-gradient(45deg, rgba(255,215,120,0.16) 0 6px, transparent 6px 12px),
+    repeating-linear-gradient(-45deg, rgba(255,215,120,0.16) 0 6px, transparent 6px 12px),
+    linear-gradient(#0d6b1e, #084d14);
+  border-top: 2px solid #c9a86a;
+  border-bottom: 2px solid #c9a86a;
+  box-shadow: inset 0 0 8px rgba(0,0,0,0.45);
+}
+.wood-frame {
+  background: linear-gradient(150deg, #9c6a33 0%, #7a4c1e 45%, #5f3712 100%);
+  border: 2px solid #caa06a;
+  border-radius: 12px;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,225,170,0.5);
+}
+.wood-plate {
+  background: linear-gradient(#6d451c, #4c2c0d);
+  border-bottom: 1px solid rgba(255,220,160,0.35);
+  border-radius: 10px 10px 0 0;
+  color: #ffe9bd;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.7);
+}
+.seat-badge {
+  background: radial-gradient(circle at 35% 30%, #ffe9a8, #d9a93f 55%, #9a741f);
+  color: #4a3205;
+  border: 2px solid #fff2c9;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.5);
+}
+.card-back-blue {
+  background:
+    radial-gradient(circle, rgba(255,255,255,0.35) 1.2px, transparent 1.6px) 0 0 / 7px 7px,
+    linear-gradient(150deg, #3f74d6, #1d4396);
+  border: 1.5px solid #eaf2ff;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.35);
+}
+.btn-orange {
+  background: linear-gradient(#ffb03a 0%, #ff8a1e 45%, #f96d00 100%);
+  border: 2px solid #ffe1ae;
+  color: #fff7ea;
+  text-shadow: 0 1px 3px rgba(120,45,0,0.65);
+  box-shadow: 0 5px 0 #b34d00, 0 8px 16px rgba(0,0,0,0.4), inset 0 2px 3px rgba(255,255,255,0.65);
+}
+.btn-orange:active:not(:disabled) { transform: translateY(3px); box-shadow: 0 2px 0 #b34d00, 0 4px 8px rgba(0,0,0,0.4), inset 0 2px 3px rgba(255,255,255,0.65); }
+.btn-orange:disabled { filter: grayscale(0.55) brightness(0.75); box-shadow: 0 3px 0 #7a4a20, 0 5px 10px rgba(0,0,0,0.35); }
+.icon-orb {
+  background: radial-gradient(circle at 32% 28%, #ffd873, #e79b1e 55%, #b96e05);
+  border: 2px solid #ffe9b0;
+  color: #4a3205;
+  box-shadow: 0 3px 8px rgba(0,0,0,0.45), inset 0 2px 3px rgba(255,255,255,0.7);
+}
+.count-label {
+  color: #fff;
+  font-weight: 800;
+  text-shadow: 0 1px 0 #000, 0 0 6px rgba(0,0,0,0.85), 1px 0 0 rgba(0,0,0,0.6), -1px 0 0 rgba(0,0,0,0.6);
+}
+.hand-card-shadow { box-shadow: 0 6px 14px rgba(0,0,0,0.45); }
+
+@keyframes chip-in {
+  0% { transform: scale(0.5); opacity: 0; }
+  60% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.chip-pop { animation: chip-in 0.28s ease-out; }
+
+@keyframes pile-out-anim {
+  0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(52px) rotate(2.5deg); opacity: 0; }
+}
+.pile-exit { animation: pile-out-anim 0.33s ease-in forwards; }
+
+/* ---- Sorairo-inspired menu world: deep green + gold ornament ---- */
+.app-bg {
+  background-color: #05231a;
+  background-image:
+    radial-gradient(circle at 15% 8%, rgba(255, 211, 77, 0.07) 0 90px, transparent 92px),
+    radial-gradient(circle at 88% 82%, rgba(255, 211, 77, 0.05) 0 130px, transparent 132px),
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.016) 0 10px, transparent 10px 20px),
+    repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.012) 0 10px, transparent 10px 20px);
+}
+.gold-text {
+  color: #ffe9a8;
+  text-shadow: 0 2px 0 rgba(0, 0, 0, 0.5), 0 0 20px rgba(255, 211, 77, 0.28);
+}
+/* Deep-green panel with a gold double frame and L-shaped corner flourishes. */
+.gold-frame {
+  position: relative;
+  border: 2px solid #d8b25c;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 233, 168, 0.35),
+    inset 0 0 22px rgba(0, 0, 0, 0.35),
+    0 10px 24px rgba(0, 0, 0, 0.4);
+}
+.gold-frame::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  pointer-events: none;
+  opacity: 0.9;
+  background:
+    linear-gradient(#ffd873, #ffd873) left top / 16px 3px,
+    linear-gradient(#ffd873, #ffd873) left top / 3px 16px,
+    linear-gradient(#ffd873, #ffd873) right top / 16px 3px,
+    linear-gradient(#ffd873, #ffd873) right top / 3px 16px,
+    linear-gradient(#ffd873, #ffd873) left bottom / 16px 3px,
+    linear-gradient(#ffd873, #ffd873) left bottom / 3px 16px,
+    linear-gradient(#ffd873, #ffd873) right bottom / 16px 3px,
+    linear-gradient(#ffd873, #ffd873) right bottom / 3px 16px;
+  background-repeat: no-repeat;
+}
+.icon-orb { transition: transform 0.08s ease, box-shadow 0.08s ease; }
+.icon-orb:active { transform: translateY(2px) scale(0.95); }
+.btn-orange { transition: transform 0.08s ease, box-shadow 0.08s ease, filter 0.15s ease; }
+
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.panel-in { animation: panel-in 0.25s ease-out both; }
+
+@keyframes banner-in {
+  0% { opacity: 0; transform: scale(0.55) rotate(-2deg); }
+  16% { opacity: 1; transform: scale(1.07) rotate(0.5deg); }
+  26% { transform: scale(1) rotate(0deg); }
+  80% { opacity: 1; transform: scale(1) translateY(0); }
+  100% { opacity: 0; transform: scale(0.96) translateY(-8px); }
+}
+.effect-banner { animation: banner-in 1.15s ease both; }
+
+@keyframes row-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.result-row { animation: row-in 0.38s ease both; }
+
+@keyframes deck-pulse {
+  0%, 100% { transform: translate(-50%, -50%) scale(1); }
+  50% { transform: translate(-50%, -50%) scale(1.05); }
+}
+.deck-pulse { animation: deck-pulse 0.9s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .card-pop, .chip-pop, .pile-exit, .turn-ring, .panel-in, .effect-banner, .result-row, .deck-pulse { animation: none !important; }
+  /* 発光の脈動は止め、静止した光枠だけ残す */
+  .playable-glow {
+    animation: none !important;
+    box-shadow: 0 0 0 2px rgba(255,216,115,0.95), 0 0 14px 4px rgba(255,205,80,0.7);
+  }
+}
