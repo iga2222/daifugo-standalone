@@ -72,6 +72,20 @@
 }
 .turn-ring { animation: pulse-ring 1.4s ease-in-out infinite; }
 
+/* ---- 今の手番の席枠：金色の強いグロー＋ゆっくりした明滅（主役の強調）。
+   革命中の赤フェルト上でも見えるよう、二重のハローで明るくする。 ---- */
+@keyframes turn-glow-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(255,224,130,1), 0 0 20px 6px rgba(255,205,80,0.8), 0 0 42px 16px rgba(255,180,40,0.38); }
+  50% { box-shadow: 0 0 0 4px rgba(255,240,190,1), 0 0 32px 12px rgba(255,205,80,0.98), 0 0 58px 24px rgba(255,180,40,0.55); }
+}
+.turn-glow { animation: turn-glow-pulse 1.25s ease-in-out infinite; }
+/* 手番の人の名前プレートも金色にして、枠の発光と合わせて目立たせる */
+.turn-plate {
+  background: linear-gradient(#ffe9a8, #f0b93e) !important;
+  color: #4a3205;
+  text-shadow: none;
+}
+
 /* 出せるカードの強調（自分の手番のみ）: 金の光枠＋ほのかな発光 */
 @keyframes playable-pulse {
   0%, 100% { box-shadow: 0 0 0 2px rgba(255,216,115,0.95), 0 0 12px 3px rgba(255,205,80,0.55); }
@@ -206,6 +220,31 @@
 }
 .pile-exit { animation: pile-out-anim 0.33s ease-in forwards; }
 
+/* ---- 席替えイントロ：席が少し寄って（gather）、新しい位置へ滑って
+   戻ってくる（settle。実際の移動は OpponentSeats の FLIP が担当し、
+   こちらは縮小・復帰の質感を付ける）。自分の席は位置が固定なので
+   settle の質感だけを使う。 ---- */
+@keyframes seat-gather-anim {
+  from { transform: scale(1) translateY(0); opacity: 1; }
+  to { transform: scale(0.8) translateY(8px); opacity: 0.7; }
+}
+.seat-gather { animation: seat-gather-anim 0.65s ease-in both; }
+@keyframes seat-settle-anim {
+  0% { transform: scale(0.8) translateY(8px); opacity: 0.7; }
+  55% { transform: scale(1.06) translateY(-3px); opacity: 1; }
+  100% { transform: scale(1) translateY(0); opacity: 1; }
+}
+.seat-settle { animation: seat-settle-anim 0.6s ease-out both; }
+
+@keyframes shuffle-banner-in {
+  0% { opacity: 0; transform: scale(0.6) rotate(-2deg); }
+  18% { opacity: 1; transform: scale(1.08) rotate(0.5deg); }
+  30% { transform: scale(1) rotate(0deg); }
+  85% { opacity: 1; transform: scale(1) translateY(0); }
+  100% { opacity: 0; transform: scale(0.97) translateY(-6px); }
+}
+.shuffle-banner { animation: shuffle-banner-in 1.5s ease both; }
+
 /* ---- Sorairo-inspired menu world: deep green + gold ornament ---- */
 .app-bg {
   background-color: #05231a;
@@ -287,7 +326,9 @@
 .deck-pulse { animation: deck-pulse 0.9s ease-in-out infinite; }
 
 @media (prefers-reduced-motion: reduce) {
-  .card-pop, .chip-pop, .pile-exit, .turn-ring, .panel-in, .effect-banner, .finish-banner, .result-row, .deck-pulse, .my-turn-banner { animation: none !important; }
+  .card-pop, .chip-pop, .pile-exit, .turn-ring, .turn-glow, .panel-in, .effect-banner, .finish-banner, .result-row, .deck-pulse, .my-turn-banner, .seat-gather, .seat-settle, .shuffle-banner { animation: none !important; }
+  /* 手番の席枠はモーション抑制時も静止した強いグローで示す */
+  .turn-glow { box-shadow: 0 0 0 3px rgba(255,224,130,1), 0 0 26px 10px rgba(255,205,80,0.85), 0 0 44px 16px rgba(255,180,40,0.4); }
   /* あがり演出はモーション抑制時も静止画として表示する（JSタイマーで消す） */
   .finish-banner { opacity: 1; }
   /* 発光の脈動は止め、静止した光枠だけ残す */
