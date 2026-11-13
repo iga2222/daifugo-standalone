@@ -18,7 +18,7 @@
 // A full redeploy may still reset the filesystem, so treat rooms as
 // long-lived but not eternal. See README-DEPLOY.md.
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   DEFAULT_RULES,
@@ -225,12 +225,21 @@ function syncPermanentHost(data: RoomData) {
   const humans = data.roster.filter((p) => !p.isBot);
   data.hostId = humans[0]?.id ?? "";
 }
-function resetPermanentIfEmpty(data: RoomData) {
-  if (!data.isPermanent) return;
+/** 誰もいなくなった常設ルームは初期状態に戻す（部屋自体は消さない）。
+ * ロビー状態だけでなく、対戦終了（最終結果表示）のまま全員が抜けた場合も
+ * 対象にする：合計点・ゲームごとの順位履歴・チャットまで消して、次の対戦が
+ * 必ず0点から始まるようにする。初期化したら true を返す。 */
+function resetPermanentIfEmpty(data: RoomData): boolean {
+  if (!data.isPermanent) return false;
   const humans = data.roster.filter((p) => !p.isBot).length;
-  if (humans === 0 && (data.waiting ?? []).length === 0 && data.status === "lobby") {
+  if (
+    humans === 0 &&
+    (data.waiting ?? []).length === 0 &&
+    (data.status === "lobby" || data.status === "finished")
+  ) {
     const fresh = createEmptyPermanentRoom();
     data.hostId = fresh.hostId;
+    data.status = "lobby";
     data.rules = fresh.rules;
     data.game = null;
     data.scores = {};
@@ -241,7 +250,9 @@ function resetPermanentIfEmpty(data: RoomData) {
     data.chat = [];
     data.prevWinnerId = null;
     data.prevRanks = null;
+    return true;
   }
+  return false;
 }
 function joinPermanentRoomData(
   data: RoomData,
@@ -498,6 +509,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
     // 秘密の言葉の判定は通常の部屋検索より先に行う
     if (input === PERMANENT_ROOM_SECRET || input === PERMANENT_ROOM_CODE) {
       const pdata = ensurePermanentRoom();
+      // 誰もいないのに前の対戦の記録が残っていたら、入室前に初期化する
+      resetPermanentIfEmpty(pdata);
       const res = joinPermanentRoomData(
         pdata,
         str(args.playerId).slice(0, 64),
@@ -542,6 +555,9 @@ const handlers: Record<string, (args: Args) => unknown> = {
     const code = str(args.code);
     if (code === PERMANENT_ROOM_CODE) {
       const pdata = ensurePermanentRoom();
+      // 対戦終了のまま全員抜けた部屋が残っていたら、表示前に初期化する
+      // （前の対戦の合計点や順位履歴を次の人に見せない）
+      if (resetPermanentIfEmpty(pdata)) saveRoom(PERMANENT_ROOM_CODE, pdata);
       return toView(code, pdata, str(args.playerId));
     }
     const data = loadRoom(code);
@@ -794,6 +810,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
 
   joinBeppan(args) {
     const data = ensurePermanentRoom();
+    // 誰もいないのに前の対戦の記録が残っていたら、入室前に初期化する
+    resetPermanentIfEmpty(data);
     const res = joinPermanentRoomData(
       data,
       str(args.playerId).slice(0, 64),
@@ -835,7 +853,8 @@ const handlers: Record<string, (args: Args) => unknown> = {
         changed = changed || data.roster.length !== before;
         if (changed) {
           syncPermanentHost(data);
-          if (data.status === "lobby") resetPermanentIfEmpty(data);
+          // ロビーでも対戦終了状態でも、最後の1人が抜けたら初期化する
+          resetPermanentIfEmpty(data);
         }
       }
       if (changed) saveRoom(code, data);
@@ -900,16 +919,63 @@ const server = Bun.serve({
       }
     }
 
-    // Static files (built client) with SPA fallback.
     const pathname = decodeURIComponent(url.pathname);
+
+    // iOS home-screen icons at the classic root paths. Safari looks for
+    // /apple-touch-icon.png (and the -precomposed variant) at the site root
+    // in addition to the <link> in the HTML; serving the current 180px icon
+    // there keeps "Add to Home Screen" from falling back to a stale cached
+    // icon or a page screenshot. Fixed-name copies live in public/; after a
+    // client rebuild wipes them, fall back to the bundled hashed asset.
+    if (
+      pathname === "/apple-touch-icon.png" ||
+      pathname === "/apple-touch-icon-precomposed.png"
+    ) {
+      const iconHeaders = {
+        "content-type": "image/png",
+        "cache-control": "no-cache",
+      };
+      const direct = Bun.file(join(PUBLIC_DIR, "apple-touch-icon.png"));
+      if (await direct.exists()) return new Response(direct, { headers: iconHeaders });
+      try {
+        const asset = readdirSync(join(PUBLIC_DIR, "assets")).find(
+          (n) => n.startsWith("icon-180-") && n.endsWith(".png"),
+        );
+        if (asset) {
+          return new Response(Bun.file(join(PUBLIC_DIR, "assets", asset)), {
+            headers: iconHeaders,
+          });
+        }
+      } catch {
+        // fall through to 404
+      }
+      return new Response("Not Found", { status: 404 });
+    }
+
+    // Static files (built client) with SPA fallback. HTML is served with
+    // Cache-Control: no-cache so updated builds (and the icon links inside
+    // them) reach devices promptly; hashed assets keep default caching.
     const rel = pathname === "/" ? "/index.html" : pathname;
     const file = Bun.file(join(PUBLIC_DIR, rel));
-    if (await file.exists()) return new Response(file);
+    if (await file.exists()) {
+      if (rel.endsWith(".html")) {
+        return new Response(file, {
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-cache",
+          },
+        });
+      }
+      return new Response(file);
+    }
     if (!/\.[a-zA-Z0-9]+$/.test(pathname)) {
       const index = Bun.file(join(PUBLIC_DIR, "index.html"));
       if (await index.exists()) {
         return new Response(index, {
-          headers: { "content-type": "text/html; charset=utf-8" },
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-cache",
+          },
         });
       }
     }
