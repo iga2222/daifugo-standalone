@@ -3341,6 +3341,11 @@ function LocalGame({
     setError("");
     setSelected((s) => {
       if (s.includes(id)) return s.filter((x) => x !== id);
+      // 通常の「出すカード」選択では、金色に光っている（出せる）カードだけ
+      // 選べる。光っていないカードはタップしても反応しない（選択解除は常に可）。
+      // カード交換・7渡し等の選択は従来どおり対象範囲で選べる。
+      if (!pending && !game.exchange && !(playableIds?.has(id) ?? false))
+        return s;
       if (
         pending &&
         pending.type !== "qBomber" &&
@@ -3899,6 +3904,131 @@ function viewAsState(view: RoomView, playerId: string): GameState {
   };
 }
 
+type ChatMsg = {
+  id: string;
+  playerId: string;
+  name: string;
+  text: string;
+  at: number;
+};
+
+/** 部屋チャットのシート。開いている間も対局は止めない（表示だけの重ね表示）。 */
+function ChatSheet({
+  messages,
+  playerId,
+  draft,
+  onDraftChange,
+  onSend,
+  sending,
+  onClose,
+}: {
+  messages: ChatMsg[];
+  playerId: string;
+  draft: string;
+  onDraftChange: (v: string) => void;
+  onSend: () => void;
+  sending: boolean;
+  onClose: () => void;
+}) {
+  const listRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages.length]);
+  const fmtTime = (at: number) => {
+    const d = new Date(at);
+    return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
+  };
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex flex-col justify-end"
+      role="dialog"
+      aria-label="チャット"
+    >
+      <button
+        type="button"
+        aria-label="チャットを閉じる"
+        className="absolute inset-0 bg-black/55"
+        style={{ minHeight: 0 }}
+        onClick={onClose}
+      />
+      <div
+        className="panel-in relative mx-auto flex max-h-[74dvh] w-full max-w-lg flex-col rounded-t-3xl border-t-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
+        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+      >
+        <div className="flex items-center justify-between px-4 pt-3 pb-1">
+          <p className="font-extrabold text-[#ffe9a8]">チャット</p>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="閉じる"
+            className="rounded-full bg-white/10 border border-white/30 text-white w-9 h-9 font-extrabold"
+            style={{ minHeight: 0 }}
+          >
+            ×
+          </button>
+        </div>
+        <div
+          ref={listRef}
+          className="min-h-[160px] flex-1 space-y-2 overflow-y-auto px-3 py-2"
+        >
+          {messages.length === 0 ? (
+            <p className="py-8 text-center text-sm font-bold text-white/60">
+              まだメッセージはありません
+            </p>
+          ) : (
+            messages.map((m) => {
+              const mine = m.playerId === playerId;
+              return (
+                <div
+                  key={m.id}
+                  className={`flex flex-col ${mine ? "items-end" : "items-start"}`}
+                >
+                  <p className="px-1 text-[11px] font-bold text-white/60">
+                    {mine ? "あなた" : m.name}・{fmtTime(m.at)}
+                  </p>
+                  <p
+                    className={`max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm font-bold ${
+                      mine
+                        ? "bg-[#ffd34d] text-[#4a3205] rounded-br-md"
+                        : "bg-white/12 text-white rounded-bl-md"
+                    }`}
+                  >
+                    {m.text}
+                  </p>
+                </div>
+              );
+            })
+          )}
+        </div>
+        <form
+          className="flex gap-2 border-t border-white/15 p-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSend();
+          }}
+        >
+          <input
+            value={draft}
+            onChange={(e) => onDraftChange(e.target.value)}
+            maxLength={200}
+            placeholder="メッセージを入力（200文字まで）"
+            aria-label="チャットメッセージ"
+            className="min-w-0 flex-1 rounded-xl border border-white/25 bg-black/30 px-3 py-2 font-bold text-white placeholder:text-white/40"
+          />
+          <button
+            type="submit"
+            disabled={!draft.trim() || sending}
+            className="btn-orange flex-none rounded-xl px-5 font-extrabold disabled:opacity-40"
+          >
+            送信
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function getPlayerId(): string {
   const key = "daifugo-player-id";
   let id = localStorage.getItem(key);
@@ -3972,14 +4102,36 @@ function OnlineGame({
   // あがり演出が表示待ち・表示中の間は結果表示への切り替えを待つ
   const [finishFxBusy, setFinishFxBusy] = useState(false);
   const [shownScores, setShownScores] = useState<Record<string, number>>({});
+  // 部屋チャット（状態同期のポーリングに相乗りして届く。専用ポーリングは増やさない）
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatDraft, setChatDraft] = useState("");
+  const [seenChatId, setSeenChatId] = useState<string | null>(null);
 
   const room = useQuery({
     queryKey: ["room", code, playerId],
     queryFn: () => api.getRoom({ code: code!, playerId }),
     enabled: !!code,
-    refetchInterval: 1800,
+    // 同期の遅延を減らすため 1800ms → 900ms（半分）。Render無料枠でも
+    // 部屋あたり毎秒1回強のリクエストに収まる範囲。
+    refetchInterval: 900,
   });
   const view: RoomView | undefined = room.data;
+
+  // チャットの未読数（最後に見たメッセージより後の、他人の発言）
+  const chatMessages: ChatMsg[] = view?.chat ?? [];
+  const lastChatId =
+    chatMessages.length > 0
+      ? (chatMessages[chatMessages.length - 1]?.id ?? null)
+      : null;
+  useEffect(() => {
+    if (chatOpen && lastChatId) setSeenChatId(lastChatId);
+  }, [chatOpen, lastChatId]);
+  const seenChatIdx = seenChatId
+    ? chatMessages.findIndex((m) => m.id === seenChatId)
+    : -1;
+  const unreadChat = chatMessages
+    .slice(seenChatIdx + 1)
+    .filter((m) => m.playerId !== playerId).length;
 
   // 端末に保存していた合言葉の部屋が消えていたら（サーバーの再起動などで
   // 消えることがある）、保存だけ先に消しておく。次に開いたときも同じ
@@ -4162,6 +4314,20 @@ function OnlineGame({
       invalidate();
     },
   });
+  const chatMut = useMutation({
+    mutationFn: async (text: string) =>
+      await api.sendChat({ code: code!, playerId, text }),
+    onSuccess: (res) => {
+      if (!res.ok) setError(res.reason);
+      else setChatDraft("");
+      invalidate();
+    },
+  });
+  const sendChat = () => {
+    const text = chatDraft.trim();
+    if (!text || chatMut.isPending) return;
+    chatMut.mutate(text.slice(0, 200));
+  };
 
   // 持ち時間タイマー（自分の手番・受け渡し・交換のときだけ進む）
   const myExStepOnline = (view?.exchange?.pending ?? []).find(
@@ -4569,6 +4735,36 @@ function OnlineGame({
     );
   }
 
+  // チャットボタン（未読バッジつき）とシート。ロビーと対局画面で共用する。
+  const chatButton = (
+    <button
+      type="button"
+      onClick={() => setChatOpen(true)}
+      aria-label={
+        unreadChat > 0 ? `チャットを開く（未読${unreadChat}件）` : "チャットを開く"
+      }
+      className="relative flex-none rounded-full border border-[#d8b25c] bg-[#0a3828] px-4 py-1.5 text-sm font-extrabold text-[#ffe9a8] shadow"
+    >
+      チャット
+      {unreadChat > 0 && (
+        <span className="absolute -right-1.5 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-[#e23c2e] px-1 text-[11px] font-extrabold text-white shadow">
+          {unreadChat}
+        </span>
+      )}
+    </button>
+  );
+  const chatSheet = chatOpen ? (
+    <ChatSheet
+      messages={chatMessages}
+      playerId={playerId}
+      draft={chatDraft}
+      onDraftChange={setChatDraft}
+      onSend={sendChat}
+      sending={chatMut.isPending}
+      onClose={() => setChatOpen(false)}
+    />
+  ) : null;
+
   // ----- lobby -----
   if (view.status === "lobby") {
     const humans = view.players.filter((p) => !p.isBot).length;
@@ -4588,7 +4784,7 @@ function OnlineGame({
             合言葉{" "}
             <span className="text-[#ffd34d] text-xl tracking-[0.2em]">{view.code}</span>
           </p>
-          <span className="w-[64px]" />
+          {chatButton}
         </div>
         <div className="px-4 mt-4 space-y-4 max-w-lg mx-auto">
           <div className="gold-frame rounded-2xl bg-[var(--surface)] p-4">
@@ -4665,6 +4861,7 @@ function OnlineGame({
           )}
           {error && <p className="text-center text-sm font-bold text-[#ff9d7a]">{error}</p>}
         </div>
+        {chatSheet}
       </div>
     );
   }
@@ -4727,6 +4924,10 @@ function OnlineGame({
     setError("");
     setSelected((s) => {
       if (s.includes(id)) return s.filter((x) => x !== id);
+      // 通常の「出すカード」選択では、金色に光っている（出せる）カードだけ
+      // 選べる（オンライン）。光っていないカードはタップしても反応しない。
+      if (!pending && !view.exchange && !(playableIdsOnline?.has(id) ?? false))
+        return s;
       if (
         pending &&
         pending.type !== "qBomber" &&
@@ -4775,6 +4976,7 @@ function OnlineGame({
             : `${currentPlayer?.name ?? ""}さんの番…`;
 
   return (
+    <>
     <GameScreen
       statusText={statusText}
       exitLabel="部屋を出る"
@@ -4785,10 +4987,14 @@ function OnlineGame({
       showMyTurnBanner={myTurnNoticeOnline.showBanner}
       myTurnBannerSeq={myTurnNoticeOnline.seq}
     >
-      <p className="text-center text-xs font-bold text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
-        合言葉 <span className="text-[#ffe9a8] tracking-[0.25em] text-sm">{view.code}</span>
-        （オンライン対戦中）
-      </p>
+      <div className="flex items-center justify-between px-3">
+        <span className="w-[76px]" aria-hidden />
+        <p className="text-center text-xs font-bold text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+          合言葉 <span className="text-[#ffe9a8] tracking-[0.25em] text-sm">{view.code}</span>
+          （オンライン対戦中）
+        </p>
+        {chatButton}
+      </div>
       <ScoreStrip
         gameNo={view.gameNumber}
         entries={view.players.map((p) => ({
@@ -5046,6 +5252,8 @@ function OnlineGame({
         </div>
       )}
     </GameScreen>
+    {chatSheet}
+    </>
   );
 }
 
