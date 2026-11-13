@@ -25,6 +25,7 @@ resolvePending as resolvePendingEngine,
 sequenceInfo,
 setRank,
 setSuit,
+sortHand,
 strongestGiveCards,
 weakestGiveCards,
 type Card,
@@ -543,6 +544,8 @@ function OpponentSeats({
   glowPlayerId,
   seatFx = null,
   passedIds,
+  canPeek = false,
+  onPeek,
 }: {
   players: BoardPlayer[];
   viewerId: string;
@@ -552,6 +555,10 @@ function OpponentSeats({
   /** 席替えイントロの段階。"settle" の瞬間に席ボックスを旧位置から新位置へ滑らせる。 */
   seatFx?: "gather" | "settle" | null;
   passedIds: string[];
+  /** 上がり済みの閲覧者だけ true。true の間、席全体がタップ可能になり、
+   * タップした相手の残り手札を親がポップアップで見せる。 */
+  canPeek?: boolean;
+  onPeek?: (playerId: string) => void;
 }) {
   const viewerIdx = players.findIndex((p) => p.id === viewerId);
   const ordered: { player: BoardPlayer; seatNo: number }[] = [];
@@ -594,26 +601,53 @@ function OpponentSeats({
     <div className="relative h-[118px] mx-1 shrink-0">
       {ordered.map(({ player, seatNo }, i) => {
         const zone = zones[Math.min(i, zones.length - 1)]!;
+        const seatBody = (
+          <SeatFrame
+            player={player}
+            seatNo={seatNo}
+            isTurn={player.id === currentPlayerId}
+            glow={player.id === glowPlayerId}
+            fx={seatFx}
+            passed={passedIds.includes(player.id)}
+            totalPlayers={players.length}
+          />
+        );
+        const seatRef = (el: HTMLElement | null) => {
+          if (el) seatEls.current.set(player.id, el);
+          else seatEls.current.delete(player.id);
+        };
+        if (canPeek && onPeek) {
+          return (
+            <button
+              key={player.id}
+              type="button"
+              data-seat-player={player.id}
+              ref={seatRef}
+              aria-label={`${player.name}の残りの手札を見る`}
+              onClick={() => onPeek(player.id)}
+              className="absolute -translate-x-1/2 cursor-pointer"
+              style={{
+                left: zone.left,
+                top: zone.top,
+                minHeight: 0,
+                padding: 0,
+                background: "transparent",
+                border: "none",
+              }}
+            >
+              {seatBody}
+            </button>
+          );
+        }
         return (
           <div
             key={player.id}
             data-seat-player={player.id}
-            ref={(el) => {
-              if (el) seatEls.current.set(player.id, el);
-              else seatEls.current.delete(player.id);
-            }}
+            ref={seatRef}
             className="absolute -translate-x-1/2"
             style={{ left: zone.left, top: zone.top }}
           >
-            <SeatFrame
-              player={player}
-              seatNo={seatNo}
-              isTurn={player.id === currentPlayerId}
-              glow={player.id === glowPlayerId}
-              fx={seatFx}
-              passed={passedIds.includes(player.id)}
-              totalPlayers={players.length}
-            />
+            {seatBody}
           </div>
         );
       })}
@@ -1287,6 +1321,8 @@ function Board({
   exchangeActive = false,
   seatFx = null,
   displayOrder = null,
+  canPeek = false,
+  onPeekPlayer,
 }: {
   players: BoardPlayer[];
   viewerId: string;
@@ -1326,6 +1362,10 @@ function Board({
   seatFx?: "gather" | "settle" | null;
   /** 席替えイントロの "gather" 中に席を表示する並び（前ゲームの席順）。 */
   displayOrder?: string[] | null;
+  /** 上がり済みの閲覧者だけ true。相手の席をタップ可能にする。 */
+  canPeek?: boolean;
+  /** 席タップで覗き見対象が選ばれたとき（親がポップアップを開く）。 */
+  onPeekPlayer?: (playerId: string) => void;
 }) {
   // --- sequential reveal (moved here from FieldPile so banners share it) ---
   const STEP_MS = 640;
@@ -1680,7 +1720,14 @@ function Board({
         glowPlayerId={seatGlowId}
         seatFx={seatFx}
         passedIds={passedIds}
+        canPeek={canPeek}
+        onPeek={onPeekPlayer}
       />
+      {canPeek && (
+        <p className="px-4 pb-1 text-center text-[11px] font-bold text-[#ffe9a8] drop-shadow-[0_1px_2px_rgba(0,0,0,0.85)]">
+          あなたは上がり済みです。相手の席をタップすると残りの手札が見られます
+        </p>
+      )}
       <FieldPile
         disp={disp}
         ghost={ghost}
@@ -3138,6 +3185,8 @@ function LocalGame({
   const [dispRev, setDispRev] = useState(false);
   // あがり演出が表示待ち・表示中の間は結果表示への切り替えを待つ
   const [finishFxBusy, setFinishFxBusy] = useState(false);
+  // 覗き見（上がった人だけ）: タップされた相手のプレイヤーID
+  const [peekId, setPeekId] = useState<string | null>(null);
 
   const current = game.players[game.current]!;
   const pending = game.pending;
@@ -3376,6 +3425,15 @@ function LocalGame({
 
   const viewerId = roster[0]?.id ?? "";
   const viewer = game.players.find((p) => p.id === viewerId) ?? current;
+  // 覗き見（CPU対戦）: 自分が上がっていて対局が続いている間だけ有効。
+  // 対局が終わったら（結果画面では）自動的に無効になる。
+  const canPeekLocal =
+    game.status === "playing" && viewer.finishRank !== null;
+  const peekPlayerLocal =
+    canPeekLocal && peekId
+      ? (game.players.find((p) => p.id === peekId && p.id !== viewerId) ??
+        null)
+      : null;
   // 席替えイントロの前半は前ゲームの並びで席番号を出す（相手席と揃える）
   const viewerSeatNo =
     (deal.displayOrder
@@ -3656,7 +3714,16 @@ function LocalGame({
         exchangeActive={!!game.exchange}
         seatFx={deal.shufflePhase}
         displayOrder={deal.displayOrder}
+        canPeek={canPeekLocal}
+        onPeekPlayer={setPeekId}
       />
+      {peekPlayerLocal && (
+        <PeekHandPopup
+          name={peekPlayerLocal.name}
+          cards={peekPlayerLocal.hand}
+          onClose={() => setPeekId(null)}
+        />
+      )}
 
       {matchEnded ? (
         <FinalResults
@@ -3912,6 +3979,66 @@ type ChatMsg = {
   at: number;
 };
 
+/** 上がり済みの人だけが見られる「相手の残り手札」ポップアップ。
+ * 手札の並びは通常の手札表示と同じ（sortHand の並び）。外側タップか
+ * 閉じるボタンで閉じる。上がり済みの相手は0枚として分かる表示にする。 */
+function PeekHandPopup({
+  name,
+  cards,
+  onClose,
+}: {
+  name: string;
+  cards: Card[];
+  onClose: () => void;
+}) {
+  const sorted = sortHand(cards);
+  return (
+    <div
+      className="fixed inset-0 z-[82] flex flex-col justify-end"
+      role="dialog"
+      aria-label={`${name}の手札`}
+    >
+      <button
+        type="button"
+        aria-label="手札を閉じる"
+        className="absolute inset-0 bg-black/55"
+        style={{ minHeight: 0 }}
+        onClick={onClose}
+      />
+      <div
+        className="panel-in relative mx-auto w-full max-w-lg rounded-t-3xl border-t-2 border-[#d8b25c] bg-[#07331a] px-4 pt-3 shadow-2xl"
+        style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 18px)" }}
+      >
+        <div className="flex items-center justify-between">
+          <p className="font-extrabold text-[#ffe9a8]">
+            {name}さんの手札（{sorted.length}枚）
+          </p>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="閉じる"
+            className="rounded-full bg-white/10 border border-white/30 text-white w-9 h-9 font-extrabold"
+            style={{ minHeight: 0 }}
+          >
+            ×
+          </button>
+        </div>
+        {sorted.length === 0 ? (
+          <p className="py-7 text-center text-sm font-bold text-white/75">
+            {name}さんは上がり済みです（手札は0枚です）
+          </p>
+        ) : (
+          <div className="mt-3 flex flex-wrap justify-center gap-1.5">
+            {sorted.map((c) => (
+              <PlayingCardView key={c.id} card={c} size="small" />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** 部屋チャットのシート。開いている間も対局は止めない（表示だけの重ね表示）。 */
 function ChatSheet({
   messages,
@@ -4118,6 +4245,8 @@ function OnlineGame({
   const [shownScores, setShownScores] = useState<Record<string, number>>({});
   // 部屋チャット（状態同期のポーリングに相乗りして届く。専用ポーリングは増やさない）
   const [chatOpen, setChatOpen] = useState(false);
+  // 覗き見（上がった人だけ）: タップされた相手のプレイヤーID
+  const [peekId, setPeekId] = useState<string | null>(null);
   const [chatDraft, setChatDraft] = useState("");
   const [seenChatId, setSeenChatId] = useState<string | null>(null);
   // 新着チャットバナー（上部表示・キュー方式）
@@ -4991,6 +5120,16 @@ function OnlineGame({
     ? (view.players.find((p) => p.id === view.field!.ownerId)?.name ?? null)
     : null;
   const mePlayer = view.players.find((p) => p.id === playerId);
+  // 覗き見（オンライン）: 自分が上がり済みで、対局が続いている間だけ有効。
+  // 手札データ自体もサーバーが上がり済みのプレイヤーにしか送らない
+  // （view.peekHands。未上がりの人には空で届く）。対局終了で自動的に無効。
+  const canPeekOnline =
+    view.status === "playing" && mePlayer?.finishRank != null;
+  const peekPlayerOnline =
+    canPeekOnline && peekId
+      ? (view.players.find((p) => p.id === peekId && p.id !== playerId) ??
+        null)
+      : null;
   // 席替えイントロの前半は前ゲームの並びで席番号を出す（相手席と揃える）
   const mySeatNo =
     (deal.displayOrder
@@ -5153,6 +5292,8 @@ function OnlineGame({
         exchangeActive={!!view.exchange}
         seatFx={deal.shufflePhase}
         displayOrder={deal.displayOrder}
+        canPeek={canPeekOnline}
+        onPeekPlayer={setPeekId}
       />
 
       {view.status === "finished" && view.matchEnded && revealCaughtUp && !finishFxBusy ? (
@@ -5367,6 +5508,13 @@ function OnlineGame({
         </div>
       )}
     </GameScreen>
+    {peekPlayerOnline && (
+      <PeekHandPopup
+        name={peekPlayerOnline.name}
+        cards={view.peekHands[peekPlayerOnline.id] ?? []}
+        onClose={() => setPeekId(null)}
+      />
+    )}
     {chatSheet}
     {chatBanner && !chatOpen && <ChatBanner msg={chatBanner} />}
     </>
