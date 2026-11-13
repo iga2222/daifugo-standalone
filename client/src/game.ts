@@ -2039,6 +2039,92 @@ export function legalSets(state: GameState, rules: Rules, playerIdx: number): Ca
 }
 
 // ============================================================
+// 自動選択（UI補助）: 場に2枚以上出ているとき、未選択の出せるカードを
+// 1枚タップしたら、そのカードを含む合法手を1つ選んで丸ごと選択する。
+// ============================================================
+
+/** 出し方の種類。canPlay と同じ分類: 組（同じ数字+ジョーカー）か、
+ * 階段系（階段・エンペラー）か。どちらでもなければ null。 */
+export function playKind(
+  rules: Rules,
+  cards: Card[],
+): "group" | "sequence" | null {
+  let rank = setRank(cards);
+  let seq = rules.stairs ? sequenceInfo(cards) : null;
+  if (seq && cards.length < rules.stairsMin) seq = null;
+  const emp = rules.emperor ? emperorInfo(cards) : null;
+  const hasJoker = cards.some((c) => c.suit === "J");
+  const nonJokerCount = cards.filter((c) => c.suit !== "J").length;
+  if (hasJoker && rules.jokerEffect === "groups") seq = null;
+  const empBlocked = hasJoker && rules.jokerEffect === "groups";
+  if (
+    rank !== null &&
+    hasJoker &&
+    nonJokerCount > 0 &&
+    rules.jokerEffect === "stairs"
+  ) {
+    rank = null;
+  }
+  const seqLike = seq ?? (empBlocked ? null : emp);
+  if (seqLike !== null && rank === null) return "sequence";
+  if (rank !== null) return "group";
+  return null;
+}
+
+/** 並べ替え用の「開始位置」: 階段系は一番小さい数字、組はその数字。 */
+function setStartKey(rules: Rules, cards: Card[]): number {
+  if (playKind(rules, cards) === "sequence") {
+    const info = sequenceInfo(cards) ?? emperorInfo(cards);
+    return info?.low ?? 99;
+  }
+  return setRank(cards) ?? 99;
+}
+
+/**
+ * 場に複数枚出ているときの自動選択: タップしたカードを含む合法手
+ * （発光判定と同じ集合 sets）の中から、自動選択する1手を決める。
+ * 優先順位:
+ *  1. 場と同じ種類（組/階段系）で、場と同じ枚数の手
+ *  2. その中では開始位置（階段系=一番小さい数字、組=その数字）が
+ *     一番小さいもの。さらに同点なら legalSets の列挙順（ジョーカーの
+ *     使用枚数が少なく、手札の並びで早い組が先に来る）が優先される
+ *  3. 1が無ければ、タップしたカードを含む合法手のうち枚数が場に一番
+ *     近いもの（同距離なら少ない方）から、開始位置・列挙順で決める
+ * 場が1枚以下、またはタップしたカードを含む合法手が無ければ null
+ * （呼び出し側は従来の1枚選択にフォールバックする）。
+ */
+export function pickAutoSelectSet(
+  fieldCards: Card[],
+  fieldKind: "group" | "sequence",
+  rules: Rules,
+  sets: Card[][],
+  tappedId: string,
+): Card[] | null {
+  if (fieldCards.length < 2) return null;
+  const fieldSize = fieldCards.length;
+  const candidates = sets
+    .map((set, index) => ({ set, index }))
+    .filter(({ set }) => set.some((c) => c.id === tappedId));
+  if (candidates.length === 0) return null;
+  const scored = candidates.map(({ set, index }) => ({
+    set,
+    index,
+    tier: playKind(rules, set) === fieldKind && set.length === fieldSize ? 0 : 1,
+    sizeDist: Math.abs(set.length - fieldSize),
+    startKey: setStartKey(rules, set),
+  }));
+  scored.sort(
+    (a, b) =>
+      a.tier - b.tier ||
+      a.sizeDist - b.sizeDist ||
+      a.set.length - b.set.length ||
+      a.startKey - b.startKey ||
+      a.index - b.index,
+  );
+  return scored[0]?.set ?? null;
+}
+
+// ============================================================
 // CPUの思考: 合法手の候補すべてを評価関数で採点して選ぶ。
 // 共通の土台は「手札を出し切るまでの手数（グループ数）」。
 // レベルごとに評価の理論が違う:
