@@ -2903,6 +2903,12 @@ interface ScoreRow {
   total: number;
 }
 
+/** 1ゲーム分の最終順位の記録（対戦終了画面の「ゲームごとの順位」用）。 */
+interface GameHistoryRecord {
+  gameNo: number;
+  entries: { id: string; name: string; finishRank: number; points: number }[];
+}
+
 /** One-line running totals shown during play. */
 /** 「ホーム画面に追加」の案内。対応ブラウザでは実際のインストールボタンも出す。 */
 function InstallGuide() {
@@ -3018,10 +3024,12 @@ function ResultsPanel({
 function FinalResults({
   gameNo,
   entries,
+  gameHistory,
   children,
 }: {
   gameNo: number;
   entries: { id: string; name: string; total: number }[];
+  gameHistory?: GameHistoryRecord[];
   children?: React.ReactNode;
 }) {
   const sorted = [...entries].sort((a, b) => b.total - a.total);
@@ -3054,6 +3062,44 @@ function FinalResults({
           </li>
         ))}
       </ol>
+      {gameHistory && gameHistory.length > 0 && (
+        <div className="mt-5">
+          <h3 className="text-center text-base font-extrabold text-[#ffe9a8]">
+            ゲームごとの順位
+          </h3>
+          <div className="mt-2 max-h-60 space-y-3 overflow-y-auto pr-1">
+            {[...gameHistory]
+              .sort((a, b) => a.gameNo - b.gameNo)
+              .map((g) => (
+                <div key={g.gameNo} className="rounded-xl bg-white/5 px-3 py-2.5">
+                  <p className="text-sm font-extrabold text-white/85">
+                    第{g.gameNo}ゲーム
+                  </p>
+                  <ol className="mt-1.5 space-y-1">
+                    {[...g.entries]
+                      .sort((a, b) => a.finishRank - b.finishRank)
+                      .map((e) => (
+                        <li
+                          key={e.id}
+                          className="flex items-center justify-between gap-2 text-sm"
+                        >
+                          <span className="whitespace-nowrap font-bold text-white">
+                            {e.finishRank}位 {e.name}
+                          </span>
+                          <span className="whitespace-nowrap text-xs font-bold text-white/60">
+                            {rankLabel(e.finishRank, g.entries.length)}
+                          </span>
+                          <span className="whitespace-nowrap font-extrabold text-[#8fe0a8]">
+                            +{e.points}点
+                          </span>
+                        </li>
+                      ))}
+                  </ol>
+                </div>
+              ))}
+          </div>
+        </div>
+      )}
       {children}
     </div>
   );
@@ -3074,6 +3120,7 @@ function LocalGame({
 }) {
   const [game, setGame] = useState<GameState>(() => createGame(roster, rules));
   const [totals, setTotals] = useState<Record<string, number>>({});
+  const [gameHistory, setGameHistory] = useState<GameHistoryRecord[]>([]);
   const [gameNo, setGameNo] = useState(1);
   const [matchEnded, setMatchEnded] = useState(false);
   const scoredRef = useRef(0);
@@ -3183,6 +3230,25 @@ function LocalGame({
         }
       }
       return next;
+    });
+    // このゲームの最終順位を履歴へ一度だけ記録（対戦終了画面用）
+    setGameHistory((prev) => {
+      if (prev.some((g) => g.gameNo === gameNo)) return prev;
+      return [
+        ...prev,
+        {
+          gameNo,
+          entries: game.players
+            .filter((p) => p.finishRank !== null)
+            .map((p) => ({
+              id: p.id,
+              name: p.name,
+              finishRank: p.finishRank!,
+              points: pointsForRank(p.finishRank!, total),
+            }))
+            .sort((a, b) => a.finishRank - b.finishRank),
+        },
+      ];
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game.status, gameNo, revealCaughtUp]);
@@ -3505,6 +3571,7 @@ function LocalGame({
     setDispRev(false);
     prevOrderRef.current = null;
     setTotals({});
+    setGameHistory([]);
     setGameNo(1);
     setDealNonce((n) => n + 1);
     setMatchEnded(false);
@@ -3594,6 +3661,7 @@ function LocalGame({
             name: p.name,
             total: totals[p.id] ?? 0,
           }))}
+          gameHistory={gameHistory}
         >
           <div className="mt-4 flex gap-2">
             <button
@@ -4774,6 +4842,7 @@ function OnlineGame({
             name: p.name,
             total: view.scores[p.id] ?? 0,
           }))}
+          gameHistory={view.gameHistory}
         >
           {view.isHost ? (
             <button
