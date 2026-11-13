@@ -1807,8 +1807,12 @@ function Board({
   );
 }
 
-/** Fanned (arched) hand at the bottom of the table. Card size and overlap
- * shrink automatically as the hand grows, so it never spills off-screen. */
+/** Fanned (arched) hand at the bottom of the table. While the fan fits the
+ * screen it stays centered as before, shrinking its overlap as the hand
+ * grows. Once the overlap would drop below a tappable width, the hand keeps
+ * a comfortable card size and becomes a horizontally swipeable strip, so
+ * the edge cards stay reachable: a drag scrolls, a light tap still selects
+ * (a click that follows a real scroll/drag is swallowed). */
 function FanHand({
   cards,
   selected,
@@ -1831,6 +1835,7 @@ function FanHand({
 }) {
   const shownCards = limit !== undefined ? cards.slice(0, Math.max(0, limit)) : cards;
   const wrapRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [wrapW, setWrapW] = useState(0);
   useEffect(() => {
     const el = wrapRef.current;
@@ -1844,59 +1849,208 @@ function FanHand({
 
   const n = shownCards.length;
   const mid = (n - 1) / 2;
-  // Measure the actual rendered width so the fan always fits its area.
+  // Measure the actual rendered width so the fan fits its area when it can.
   const avail = (wrapW > 0 ? wrapW : 360) - 6;
   let cardW = 58;
   let step = 0;
   if (n > 1) {
     step = Math.min(36, (avail - cardW) / (n - 1));
-    if (step < 13) {
-      // Too many cards: tighten to a 13px sliver and shrink the cards instead.
-      step = 13;
-      cardW = Math.max(38, avail - step * (n - 1));
-    }
+  }
+  // スクロールモード: 扇の重なりがタップできる幅（20px）を下回るほど
+  // 枚数が多いときは、カードを無理に縮めて見切れさせるのではなく、
+  // 読みやすい大きさのまま横スワイプで端のカードまで届かせる。
+  const scrollable = n > 1 && step < 20;
+  if (scrollable) {
+    cardW = 54;
+    step = 24;
+  } else if (step < 13) {
+    // Too many cards: tighten to a 13px sliver and shrink the cards instead.
+    step = 13;
+    cardW = Math.max(38, avail - step * (n - 1));
   }
   const cardH = Math.round(cardW * 1.45);
-  const arc = (rel: number) => Math.min(Math.abs(rel) * Math.abs(rel) * 0.5, 16);
+  const padX = 12;
+  const contentW = cardW + step * Math.max(0, n - 1) + padX * 2;
+  const boxH = cardH + (scrollable ? 30 : 22);
+  const arc = (rel: number) =>
+    Math.min(
+      Math.abs(rel) * Math.abs(rel) * (scrollable ? 0.22 : 0.5),
+      scrollable ? 9 : 16,
+    );
+
+  // ---- スワイプ（スクロール）とタップ（選択）の競合防止 ----
+  // 指のスワイプ（ネイティブスクロール）やマウスのドラッグで実際に
+  // スクロールが動いた直後のクリックは、選択として扱わない。
+  const gestureRef = useRef<{ x: number; sl: number; dragged: boolean } | null>(
+    null,
+  );
+  const suppressRef = useRef(false);
+  const [edges, setEdges] = useState({ left: false, right: false });
+
+  const syncEdges = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    setEdges({
+      left: el.scrollLeft > 4,
+      right: max > 4 && el.scrollLeft < max - 4,
+    });
+  };
+
+  // 新しい対局の配札など、手札がまとめて増えたら左端に戻す。
+  const prevCountRef = useRef(cards.length);
+  useEffect(() => {
+    const prev = prevCountRef.current;
+    prevCountRef.current = cards.length;
+    if (scrollable && cards.length - prev >= 4) {
+      scrollRef.current?.scrollTo({ left: 0 });
+    }
+    syncEdges();
+  }, [cards.length, scrollable, wrapW]);
+
+  // デスクトップ: 縦ホイールを横スクロールに変換する。
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !scrollable) return;
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        e.preventDefault();
+        el.scrollLeft += e.deltaY;
+      }
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [scrollable]);
+
+  const endGesture = () => {
+    const g = gestureRef.current;
+    const el = scrollRef.current;
+    const scrolled = el && g ? Math.abs(el.scrollLeft - g.sl) > 4 : false;
+    if (g?.dragged || scrolled) {
+      suppressRef.current = true;
+      window.setTimeout(() => {
+        suppressRef.current = false;
+      }, 150);
+    }
+    gestureRef.current = null;
+  };
+
+  const handleToggle = (id: string) => {
+    if (suppressRef.current) return;
+    onToggle?.(id);
+  };
 
   return (
     <div
       ref={wrapRef}
       data-hand="true"
       className="relative mx-1 shrink-0"
-      style={{ height: cardH + 22 }}
+      style={{ height: boxH }}
       aria-label="手札"
     >
-      {shownCards.map((c, i) => {
-        const rel = i - mid;
-        const isSel = selected.includes(c.id);
-        const rot = Math.max(-17, Math.min(17, rel * 3.2));
-        const playable = playableIds ? playableIds.has(c.id) : null;
-        const glowing = playable === true || (glowIds ? glowIds.has(c.id) : false);
-        return (
-          <div
-            key={c.id}
-            className={`absolute bottom-0.5 ${glowing ? "playable-glow" : ""}`}
-            style={{
-              left: `calc(50% + ${rel * step}px)`,
-              transform: `translateX(-50%) rotate(${rot}deg) translateY(${arc(rel) + (isSel ? -20 : 0)}px)`,
-              transformOrigin: "50% 130%",
-              transition: "transform 180ms ease, left 180ms ease, filter 200ms ease",
-              zIndex: isSel ? 40 : i + 1,
-              filter:
-                playable === false ? "brightness(0.52) saturate(0.5)" : undefined,
-            }}
-          >
-            <PlayingCardView
-              card={c}
-              size="hand"
-              selected={isSel}
-              onClick={onToggle ? () => onToggle(c.id) : undefined}
-              style={{ width: cardW, height: cardH }}
-            />
-          </div>
-        );
-      })}
+      <div
+        ref={scrollRef}
+        className={
+          scrollable
+            ? "hand-scroll absolute inset-0 overflow-x-auto overflow-y-hidden"
+            : "absolute inset-0"
+        }
+        style={scrollable ? { touchAction: "pan-x" } : undefined}
+        onScroll={scrollable ? syncEdges : undefined}
+        onPointerDown={
+          scrollable
+            ? (e) => {
+                suppressRef.current = false;
+                gestureRef.current = {
+                  x: e.clientX,
+                  sl: scrollRef.current?.scrollLeft ?? 0,
+                  dragged: false,
+                };
+              }
+            : undefined
+        }
+        onPointerMove={
+          scrollable
+            ? (e) => {
+                const g = gestureRef.current;
+                if (!g) return;
+                const dx = e.clientX - g.x;
+                if (Math.abs(dx) > 8) g.dragged = true;
+                // マウスはネイティブの横スクロールが無いのでドラッグで滑らせる。
+                if (g.dragged && e.pointerType === "mouse" && e.buttons > 0) {
+                  const el = scrollRef.current;
+                  if (el) el.scrollLeft = g.sl - dx;
+                }
+              }
+            : undefined
+        }
+        onPointerUp={scrollable ? endGesture : undefined}
+        onPointerCancel={scrollable ? endGesture : undefined}
+      >
+        <div
+          className="relative h-full"
+          style={scrollable ? { width: contentW } : undefined}
+        >
+          {shownCards.map((c, i) => {
+            const rel = i - mid;
+            const isSel = selected.includes(c.id);
+            const rot = scrollable
+              ? Math.max(-8, Math.min(8, rel * 1.1))
+              : Math.max(-17, Math.min(17, rel * 3.2));
+            const playable = playableIds ? playableIds.has(c.id) : null;
+            const glowing =
+              playable === true || (glowIds ? glowIds.has(c.id) : false);
+            return (
+              <div
+                key={c.id}
+                className={`absolute ${scrollable ? "bottom-1.5" : "bottom-0.5"} ${glowing ? "playable-glow" : ""}`}
+                style={{
+                  left: scrollable
+                    ? `${padX + cardW / 2 + i * step}px`
+                    : `calc(50% + ${rel * step}px)`,
+                  transform: `translateX(-50%) rotate(${rot}deg) translateY(${arc(rel) + (isSel ? -20 : 0)}px)`,
+                  transformOrigin: "50% 130%",
+                  transition:
+                    "transform 180ms ease, left 180ms ease, filter 200ms ease",
+                  zIndex: isSel ? 40 : i + 1,
+                  filter:
+                    playable === false
+                      ? "brightness(0.52) saturate(0.5)"
+                      : undefined,
+                }}
+              >
+                <PlayingCardView
+                  card={c}
+                  size="hand"
+                  selected={isSel}
+                  onClick={onToggle ? () => handleToggle(c.id) : undefined}
+                  style={{ width: cardW, height: cardH }}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      {scrollable && edges.left && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 left-0 z-50 flex w-7 items-center justify-start bg-gradient-to-r from-black/45 to-transparent pl-0.5"
+        >
+          <span className="text-lg font-extrabold text-[#ffd873] drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
+            ‹
+          </span>
+        </div>
+      )}
+      {scrollable && edges.right && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-y-0 right-0 z-50 flex w-7 items-center justify-end bg-gradient-to-l from-black/45 to-transparent pr-0.5"
+        >
+          <span className="text-lg font-extrabold text-[#ffd873] drop-shadow-[0_1px_2px_rgba(0,0,0,0.9)]">
+            ›
+          </span>
+        </div>
+      )}
     </div>
   );
 }
