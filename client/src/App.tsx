@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type ApiResponse } from "./api";
 import { isStandalone } from "./pwa";
@@ -380,6 +380,8 @@ function SeatFrame({
   player,
   seatNo,
   isTurn,
+  glow = false,
+  fx = null,
   passed,
   totalPlayers,
   large = false,
@@ -388,6 +390,10 @@ function SeatFrame({
   player: BoardPlayer;
   seatNo: number;
   isTurn: boolean;
+  /** 今の手番の席を金色に強く光らせる（表示中の手番に連動）。isTurn の控えめなリングより優先。 */
+  glow?: boolean;
+  /** 席替えイントロの質感（寄る／戻る）。位置の移動は OpponentSeats の FLIP が担当。 */
+  fx?: "gather" | "settle" | null;
   passed: boolean;
   totalPlayers: number;
   large?: boolean;
@@ -395,7 +401,11 @@ function SeatFrame({
   gauge?: number | null;
 }) {
   return (
-    <div className={`relative flex flex-col items-center ${passed ? "opacity-55" : ""}`}>
+    <div
+      className={`relative flex flex-col items-center ${passed ? "opacity-55" : ""} ${
+        fx === "gather" ? "seat-gather" : fx === "settle" ? "seat-settle" : ""
+      }`}
+    >
       {/* blue card backs fanning out behind the frame */}
       <div aria-hidden className="absolute left-1/2 top-[46%] -translate-x-1/2 z-0 flex">
         {[-20, 0, 20].map((deg) => (
@@ -408,10 +418,10 @@ function SeatFrame({
       </div>
       <div
         className={`wood-frame relative z-10 ${large ? "w-[88px]" : "w-[66px]"} ${
-          isTurn ? "turn-ring" : ""
+          glow ? "turn-glow" : isTurn ? "turn-ring" : ""
         }`}
       >
-        <div className="wood-plate px-1 py-0.5 text-center">
+        <div className={`wood-plate px-1 py-0.5 text-center ${glow ? "turn-plate" : ""}`}>
           <span className={`block truncate font-bold ${large ? "text-[13px]" : "text-[10px]"}`}>
             {player.name}
           </span>
@@ -530,11 +540,17 @@ function OpponentSeats({
   players,
   viewerId,
   currentPlayerId,
+  glowPlayerId,
+  seatFx = null,
   passedIds,
 }: {
   players: BoardPlayer[];
   viewerId: string;
   currentPlayerId: string | null;
+  /** 強く光らせる席（表示中の手番）。カード交換中などは null で従来表示。 */
+  glowPlayerId: string | null;
+  /** 席替えイントロの段階。"settle" の瞬間に席ボックスを旧位置から新位置へ滑らせる。 */
+  seatFx?: "gather" | "settle" | null;
   passedIds: string[];
 }) {
   const viewerIdx = players.findIndex((p) => p.id === viewerId);
@@ -544,6 +560,36 @@ function OpponentSeats({
     ordered.push({ player: p, seatNo: ((viewerIdx + step) % players.length) + 1 });
   }
   const zones = SEAT_ZONES[Math.max(0, ordered.length - 1)] ?? SEAT_ZONES[0]!;
+
+  // 席替え FLIP: 席ボックスの画面位置を毎レンダー記録しておき、"settle"
+  // への切り替わり（= 並びが旧→新へ変わったレンダー）で、前回位置から
+  // 新位置へ滑らせる。位置が変わっていない席は動かさない。
+  const seatEls = useRef(new Map<string, HTMLElement>());
+  const prevRects = useRef(new Map<string, { x: number; y: number }>());
+  useLayoutEffect(() => {
+    const next = new Map<string, { x: number; y: number }>();
+    for (const [id, el] of seatEls.current) {
+      const r = el.getBoundingClientRect();
+      next.set(id, { x: r.left, y: r.top });
+      const prev = prevRects.current.get(id);
+      if (
+        seatFx === "settle" &&
+        prev &&
+        (Math.abs(prev.x - r.left) > 3 || Math.abs(prev.y - r.top) > 3) &&
+        typeof el.animate === "function"
+      ) {
+        el.animate(
+          [
+            { transform: `translate(${prev.x - r.left}px, ${prev.y - r.top}px)` },
+            { transform: "translate(0px, 0px)" },
+          ],
+          { duration: 620, easing: "cubic-bezier(0.22, 0.9, 0.3, 1)" },
+        );
+      }
+    }
+    prevRects.current = next;
+  });
+
   return (
     <div className="relative h-[118px] mx-1 shrink-0">
       {ordered.map(({ player, seatNo }, i) => {
@@ -552,6 +598,10 @@ function OpponentSeats({
           <div
             key={player.id}
             data-seat-player={player.id}
+            ref={(el) => {
+              if (el) seatEls.current.set(player.id, el);
+              else seatEls.current.delete(player.id);
+            }}
             className="absolute -translate-x-1/2"
             style={{ left: zone.left, top: zone.top }}
           >
@@ -559,6 +609,8 @@ function OpponentSeats({
               player={player}
               seatNo={seatNo}
               isTurn={player.id === currentPlayerId}
+              glow={player.id === glowPlayerId}
+              fx={seatFx}
               passed={passedIds.includes(player.id)}
               totalPlayers={players.length}
             />
@@ -1232,6 +1284,9 @@ function Board({
   onFinishFxBusy,
   replayKey = null,
   holdReveal = false,
+  exchangeActive = false,
+  seatFx = null,
+  displayOrder = null,
 }: {
   players: BoardPlayer[];
   viewerId: string;
@@ -1265,6 +1320,12 @@ function Board({
   replayKey?: string | null;
   /** true の間は順次表示を進めない（配札アニメーションの再生中）。 */
   holdReveal?: boolean;
+  /** カード交換フェーズ中は席の強い発光を止め、従来の表示を優先する。 */
+  exchangeActive?: boolean;
+  /** 席替えイントロの段階（useDealing から）。 */
+  seatFx?: "gather" | "settle" | null;
+  /** 席替えイントロの "gather" 中に席を表示する並び（前ゲームの席順）。 */
+  displayOrder?: string[] | null;
 }) {
   // --- sequential reveal (moved here from FieldPile so banners share it) ---
   const STEP_MS = 640;
@@ -1409,6 +1470,25 @@ function Board({
   // 11バック（backActive）はここには一切含めない。
   const caughtUp = disp.length === history.length && hasPrefix(disp, history);
   const dispRevolution = caughtUp ? revolution : revolutionFromDisp(disp);
+
+  // 画面に表示されている手番（席の発光用）: 再生中は「いま表示された
+  // 一手」を出した人が手番として光る。論理上の手番をそのまま使うと、
+  // サーバー側で先行した未来の手番が先に光ってしまうため、表示キューに
+  // 追いついたときだけ論理上の手番（pending の人も含む）を使う。
+  // 場が流れた直後も、最後に表示された一手の出し手 = 次のリードなので合う。
+  const dispTurnId: string | null = caughtUp
+    ? currentPlayerId
+    : (() => {
+        for (let i = disp.length - 1; i >= 0; i--) {
+          const h = disp[i]!;
+          if (!h.flow && h.playerId) return h.playerId;
+        }
+        // まだ1手も表示されていない間は、最初の手番の人を光らせる。
+        const first = history.find((h) => !h.flow && h.playerId);
+        return first ? first.playerId : currentPlayerId;
+      })();
+  const seatTurnId = exchangeActive ? currentPlayerId : dispTurnId;
+  const seatGlowId = exchangeActive ? null : dispTurnId;
   const dispRevRef = useRef(onDisplayedRevolution);
   dispRevRef.current = onDisplayedRevolution;
   useEffect(() => {
@@ -1583,12 +1663,22 @@ function Board({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [log]);
 
+  // 席替えイントロの前半は、前ゲームの席順のまま席を表示する
+  // （後半で新しい並びへ切り替わり、席ボックスが新しい位置へ滑る）。
+  const seatPlayers = displayOrder
+    ? [...players].sort(
+        (a, b) => displayOrder.indexOf(a.id) - displayOrder.indexOf(b.id),
+      )
+    : players;
+
   return (
     <>
       <OpponentSeats
-        players={players}
+        players={seatPlayers}
         viewerId={viewerId}
-        currentPlayerId={currentPlayerId}
+        currentPlayerId={seatTurnId}
+        glowPlayerId={seatGlowId}
+        seatFx={seatFx}
         passedIds={passedIds}
       />
       <FieldPile
@@ -1787,19 +1877,34 @@ function useDealing(
   viewerId: string,
   handSize: number,
   enabled: boolean,
+  intro?: {
+    /** 今ゲームの席順（プレイヤーIDの並び）。 */
+    orderIds: string[];
+    /** 前ゲームの席順。席替えで並びが変わったときだけイントロを再生する。 */
+    prevOrder: string[] | null;
+    enabled: boolean;
+  } | null,
 ) {
   const [active, setActive] = useState(false);
   const [viewerDealt, setViewerDealt] = useState(0);
   const [flight, setFlight] = useState<DealFlight | null>(null);
+  // 席替えイントロ: "gather"（前ゲームの並びのまま席が寄る）→
+  // "settle"（新しい並びへ切り替わり、席が新しい位置へ滑る）→ 配札開始。
+  const [shufflePhase, setShufflePhase] = useState<"gather" | "settle" | null>(null);
+  const [displayOrder, setDisplayOrder] = useState<string[] | null>(null);
   const timers = useRef<number[]>([]);
   const startedKey = useRef<string | null>(null);
   const skipRef = useRef<() => void>(() => {});
+  const skipIntroRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (!dealKey || startedKey.current === dealKey) return;
     startedKey.current = dealKey;
     timers.current.forEach((t) => window.clearTimeout(t));
     timers.current = [];
+    setShufflePhase(null);
+    setDisplayOrder(null);
+    skipIntroRef.current = () => {};
     if (!enabled || handSize <= 0 || participants.length === 0 || prefersReducedMotion()) {
       setActive(false);
       setViewerDealt(handSize);
@@ -1807,6 +1912,49 @@ function useDealing(
       skipRef.current = () => {};
       return;
     }
+    // 席替えイントロが必要か: 席替えON・前ゲームの並びがあり、
+    // 新しい並びが前回と実際に違うときだけ（同じ並びなら演出なし）。
+    const orderNow = intro?.orderIds ?? [];
+    const prevOrder = intro?.prevOrder ?? null;
+    const orderChanged =
+      !!intro?.enabled &&
+      !!prevOrder &&
+      prevOrder.length === orderNow.length &&
+      orderNow.length >= 2 &&
+      orderNow.some((id, i) => prevOrder[i] !== id);
+    if (orderChanged) {
+      setShufflePhase("gather");
+      setDisplayOrder(prevOrder);
+      let introDone = false;
+      const beginDealing = () => {
+        if (introDone) return;
+        introDone = true;
+        setShufflePhase(null);
+        setDisplayOrder(null);
+        skipIntroRef.current = () => {};
+        startDealing();
+      };
+      // 700ms で並びを新しい席順へ切り替え（displayOrder 解除）、その
+      // レンダーで OpponentSeats の FLIP が席を旧位置→新位置へ滑らせる。
+      // shufflePhase は配札開始まで "settle" のまま保持する。
+      const t1 = window.setTimeout(() => {
+        setDisplayOrder(null);
+        setShufflePhase("settle");
+      }, 700);
+      const t2 = window.setTimeout(beginDealing, 1500);
+      timers.current.push(t1, t2);
+      skipIntroRef.current = () => {
+        window.clearTimeout(t1);
+        window.clearTimeout(t2);
+        beginDealing();
+      };
+      return;
+    }
+    startDealing();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dealKey]);
+
+  function startDealing() {
     const seq: string[] = [];
     for (let r = 0; r < handSize; r++) {
       for (const p of participants) seq.push(p.id);
@@ -1861,8 +2009,7 @@ function useDealing(
       setFlight(null);
       setViewerDealt(handSize);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dealKey]);
+  }
 
   useEffect(
     () => () => {
@@ -1871,10 +2018,47 @@ function useDealing(
     [],
   );
 
-  return { active, viewerDealt, flight, skip: () => skipRef.current() };
+  return {
+    active,
+    viewerDealt,
+    flight,
+    skip: () => skipRef.current(),
+    shufflePhase,
+    displayOrder,
+    skipIntro: () => skipIntroRef.current(),
+  };
 }
 
 type DealState = ReturnType<typeof useDealing>;
+
+/** 席替えイントロのバナー。配札の前に約1.5秒出て、タップで
+ * イントロだけを飛ばして配札へ進める。 */
+function SeatShuffleBanner({ deal }: { deal: DealState }) {
+  if (!deal.shufflePhase) return null;
+  return (
+    <div
+      className="fixed inset-0 z-[75] flex items-center justify-center px-6"
+      role="button"
+      aria-label="席替えアニメーションをスキップ"
+      onClick={deal.skipIntro}
+    >
+      <div className="shuffle-banner gold-frame pointer-events-none rounded-3xl bg-[#0a2e1c]/95 px-8 py-5 text-center shadow-2xl">
+        <p
+          className="gold-text text-5xl font-extrabold tracking-wide"
+          style={{
+            textShadow:
+              "0 3px 0 rgba(0,0,0,0.55), 0 0 30px rgba(255,211,77,0.45)",
+          }}
+        >
+          席替え！
+        </p>
+        <p className="mt-1.5 text-sm font-bold text-white/90">
+          席順が入れ替わりました
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function DealOverlay({ deal }: { deal: DealState }) {
   if (!deal.active) return null;
@@ -2898,6 +3082,8 @@ function LocalGame({
   const [chosenRank, setChosenRank] = useState<number | null>(null);
   const [, setTick] = useState(0);
   const [dealNonce, setDealNonce] = useState(0);
+  // 席替えイントロ用：前ゲームの席順（次のゲーム開始時に useDealing へ渡す）
+  const prevOrderRef = useRef<string[] | null>(null);
   // Boardの順次表示が最新の状態に追いついているか。追いつくまでは
   // 結果表示・手札の発光・持ち時間タイマーを開始しない。
   const [revealCaughtUp, setRevealCaughtUp] = useState(true);
@@ -2941,11 +3127,16 @@ function LocalGame({
     dealViewerId,
     game.players.find((p) => p.id === dealViewerId)?.hand.length ?? 0,
     game.status === "playing" && game.history.length === 0,
+    {
+      orderIds: game.players.map((p) => p.id),
+      prevOrder: prevOrderRef.current,
+      enabled: rules.seatShuffle === "random" && gameNo >= 2,
+    },
   );
 
   // Bot turns (including bot pending actions and bot card exchange)
   useEffect(() => {
-    if (!isBotTurn || deal.active) return;
+    if (!isBotTurn || deal.active || deal.shufflePhase) return;
     const t = setTimeout(() => {
       setGame((prev) => {
         if (prev.status !== "playing") return prev;
@@ -2975,7 +3166,7 @@ function LocalGame({
     }, 950);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [game, isBotTurn, deal.active]);
+  }, [game, isBotTurn, deal.active, deal.shufflePhase]);
 
   // 得点: ゲームが終わったら一度だけ、そのゲームの点数を合計へ加算。
   // ただし結果表示と同じく、順次表示が最後の手まで追いついてから加算する
@@ -3114,7 +3305,11 @@ function LocalGame({
 
   const viewerId = roster[0]?.id ?? "";
   const viewer = game.players.find((p) => p.id === viewerId) ?? current;
-  const viewerSeatNo = game.players.findIndex((p) => p.id === viewerId) + 1;
+  // 席替えイントロの前半は前ゲームの並びで席番号を出す（相手席と揃える）
+  const viewerSeatNo =
+    (deal.displayOrder
+      ? deal.displayOrder.indexOf(viewerId)
+      : game.players.findIndex((p) => p.id === viewerId)) + 1;
   const ownerName = game.field
     ? (game.players.find((p) => p.id === game.field!.ownerId)?.name ?? null)
     : null;
@@ -3214,7 +3409,8 @@ function LocalGame({
     myTurnHuman &&
     viewer.id === current.id &&
     revealCaughtUp &&
-    !deal.active;
+    !deal.active &&
+    !deal.shufflePhase;
   const myTurnNotice = useMyTurnNotice(myTurnActive);
 
   // 持ち時間タイマー: 時間切れで状況に応じた自動処理（詰まらない形に）
@@ -3222,6 +3418,7 @@ function LocalGame({
     game.status === "playing" &&
     !matchEnded &&
     !deal.active &&
+    !deal.shufflePhase &&
     revealCaughtUp &&
     (myTurnHuman || pendingIsMine || exchangeMine);
   const timeLeft = useTurnTimer(
@@ -3283,6 +3480,8 @@ function LocalGame({
 
   const restart = () => {
     setDispRev(false); // 次ゲームは緑から始める
+    // 席替えイントロ用に、いま終わったゲームの席順を覚えておく
+    prevOrderRef.current = game.players.map((p) => p.id);
     const ranks: Record<string, number> = {};
     for (const p of game.players) {
       if (p.finishRank !== null) ranks[p.id] = p.finishRank;
@@ -3304,6 +3503,7 @@ function LocalGame({
 
   const resetMatch = () => {
     setDispRev(false);
+    prevOrderRef.current = null;
     setTotals({});
     setGameNo(1);
     setDealNonce((n) => n + 1);
@@ -3351,10 +3551,17 @@ function LocalGame({
         }))}
       />
       <DealOverlay deal={deal} />
+      <SeatShuffleBanner deal={deal} />
       <Board
         players={players}
         viewerId={viewerId}
-        currentPlayerId={game.status === "playing" ? (pending?.playerId ?? current.id) : null}
+        currentPlayerId={
+          deal.shufflePhase
+            ? null
+            : game.status === "playing"
+              ? (pending?.playerId ?? current.id)
+              : null
+        }
         passedIds={game.passed}
         fieldCards={game.field?.cards ?? null}
         ownerName={ownerName}
@@ -3373,7 +3580,10 @@ function LocalGame({
         onRevealSync={setRevealCaughtUp}
         onDisplayedRevolution={setDispRev}
         onFinishFxBusy={setFinishFxBusy}
-        holdReveal={deal.active}
+        holdReveal={deal.active || !!deal.shufflePhase}
+        exchangeActive={!!game.exchange}
+        seatFx={deal.shufflePhase}
+        displayOrder={deal.displayOrder}
       />
 
       {matchEnded ? (
@@ -3448,6 +3658,15 @@ function LocalGame({
               }
               seatNo={viewerSeatNo}
               isTurn={current.id === viewerId && !pending && revealCaughtUp && !deal.active}
+              glow={
+                current.id === viewerId &&
+                !pending &&
+                revealCaughtUp &&
+                !deal.active &&
+                !deal.shufflePhase &&
+                !game.exchange
+              }
+              fx={deal.shufflePhase}
               passed={game.passed.includes(viewerId)}
               totalPlayers={players.length}
               large
@@ -3464,7 +3683,7 @@ function LocalGame({
               selected={selected}
               playableIds={playableIds}
               glowIds={exGiveGlowIds}
-              limit={deal.active ? deal.viewerDealt : undefined}
+              limit={deal.active || deal.shufflePhase ? deal.viewerDealt : undefined}
               onToggle={
                 (myTurnHuman && viewer.id === current.id) ||
                 (pendingIsMine &&
@@ -3723,6 +3942,14 @@ function OnlineGame({
     prevStatusRef.current = view.status;
   }, [view?.status, view?.gameNumber]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 席替えイントロ用：対局が終わるたびに、そのゲームの席順を覚えておく
+  const prevOrderRefOnline = useRef<string[] | null>(null);
+  useEffect(() => {
+    if (view?.status === "finished") {
+      prevOrderRefOnline.current = view.players.map((p) => p.id);
+    }
+  }, [view?.status, view?.gameNumber]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const deal = useDealing(
     view ? `online-${view.code}-${dealToken}` : null,
     view?.players ?? [],
@@ -3731,6 +3958,12 @@ function OnlineGame({
     // CPUが先に動いたゲームでも配札アニメは再生する（履歴が空かどうかは見ない）。
     // 途中参加・再読込では dealToken が上がらないため、従来どおり再生されない。
     !!view && view.status === "playing" && dealToken > 0,
+    {
+      orderIds: view?.players.map((p) => p.id) ?? [],
+      prevOrder: prevOrderRefOnline.current,
+      enabled:
+        !!view && view.rules.seatShuffle === "random" && view.gameNumber >= 2,
+    },
   );
 
   const invalidate = () =>
@@ -3910,6 +4143,7 @@ function OnlineGame({
     !!view &&
     view.status === "playing" &&
     !deal.active &&
+    !deal.shufflePhase &&
     revealCaughtUp &&
     ((view.pending != null && view.pending.playerId === playerId) ||
       !!myExStepOnline ||
@@ -4029,7 +4263,8 @@ function OnlineGame({
     !view.exchange &&
     view.currentPlayerId === playerId &&
     revealCaughtUp &&
-    !deal.active;
+    !deal.active &&
+    !deal.shufflePhase;
   const myTurnNoticeOnline = useMyTurnNotice(myTurnActiveOnline);
 
   // 合計点の表示用スナップショット: 対局終了直後は、順次表示が最後まで
@@ -4379,7 +4614,11 @@ function OnlineGame({
     ? (view.players.find((p) => p.id === view.field!.ownerId)?.name ?? null)
     : null;
   const mePlayer = view.players.find((p) => p.id === playerId);
-  const mySeatNo = view.players.findIndex((p) => p.id === playerId) + 1;
+  // 席替えイントロの前半は前ゲームの並びで席番号を出す（相手席と揃える）
+  const mySeatNo =
+    (deal.displayOrder
+      ? deal.displayOrder.indexOf(playerId)
+      : view.players.findIndex((p) => p.id === playerId)) + 1;
 
   const myExStep = myExStepOnline;
   const firstExStep = view.exchange?.pending[0];
@@ -4491,11 +4730,16 @@ function OnlineGame({
         }))}
       />
       <DealOverlay deal={deal} />
+      <SeatShuffleBanner deal={deal} />
       <Board
         players={players}
         viewerId={playerId}
         currentPlayerId={
-          view.status === "playing" ? (pending?.playerId ?? view.currentPlayerId) : null
+          deal.shufflePhase
+            ? null
+            : view.status === "playing"
+              ? (pending?.playerId ?? view.currentPlayerId)
+              : null
         }
         passedIds={view.passedIds}
         fieldCards={view.field?.cards ?? null}
@@ -4516,7 +4760,10 @@ function OnlineGame({
         onDisplayedRevolution={setDispRev}
         onFinishFxBusy={setFinishFxBusy}
         replayKey={dealToken > 0 ? `online-${view.code}-${dealToken}` : null}
-        holdReveal={deal.active}
+        holdReveal={deal.active || !!deal.shufflePhase}
+        exchangeActive={!!view.exchange}
+        seatFx={deal.shufflePhase}
+        displayOrder={deal.displayOrder}
       />
 
       {view.status === "finished" && view.matchEnded && revealCaughtUp && !finishFxBusy ? (
@@ -4606,6 +4853,14 @@ function OnlineGame({
               }
               seatNo={mySeatNo}
               isTurn={isMyTurn && revealCaughtUp && !deal.active}
+              glow={
+                isMyTurn &&
+                revealCaughtUp &&
+                !deal.active &&
+                !deal.shufflePhase &&
+                !view.exchange
+              }
+              fx={deal.shufflePhase}
               passed={view.passedIds.includes(playerId)}
               totalPlayers={players.length}
               large
@@ -4622,7 +4877,7 @@ function OnlineGame({
               selected={selected}
               playableIds={playableIdsOnline}
               glowIds={exGiveGlowIdsOnline}
-              limit={deal.active ? deal.viewerDealt : undefined}
+              limit={deal.active || deal.shufflePhase ? deal.viewerDealt : undefined}
               onToggle={
                 isMyTurn ||
                 (pendingIsMine &&
