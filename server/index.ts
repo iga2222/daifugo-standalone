@@ -373,6 +373,7 @@ function toView(code: string, data: RoomData, playerId: string) {
         isHost: data.hostId === p.id,
         cardCount: gp ? gp.hand.length : 0,
         finishRank: gp ? gp.finishRank : null,
+        prevRank: gp ? (game?.prevRanks?.[gp.id] ?? null) : null,
         avatar: rosterEntry?.avatar ?? null,
       };
     }),
