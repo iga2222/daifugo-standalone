@@ -178,6 +178,8 @@ interface BoardPlayer {
   /** 直前のゲームでの順位（席アイコン右下のバッジ）。無い場合は null で
    * バッジ自体を出さない（1ゲーム目・途中参加者）。 */
   prevRank?: number | null;
+  /** 対戦通算の合計点。席の枚数表示の横に金色で出す。null/未設定なら出さない。 */
+  total?: number | null;
   isHost?: boolean;
   avatar?: string | null;
 }
@@ -500,7 +502,7 @@ function SeatFrame({
         </div>
       </div>
       <p
-        className={`count-label relative z-10 mt-0.5 ${large ? "text-sm" : "text-xs"}`}
+        className={`count-label relative z-10 mt-0.5 whitespace-nowrap ${large ? "text-sm" : "text-xs"}`}
         style={
           player.finishRank === null && player.cardCount > 0 && player.cardCount <= 3
             ? { color: "#ffd34d", transform: "scale(1.18)" }
@@ -512,6 +514,11 @@ function SeatFrame({
           : passed
             ? "パス"
             : `${player.cardCount}枚`}
+        {player.total != null && (
+          <span className="font-extrabold text-[#ffd34d]">
+            ・合計{player.total}点
+          </span>
+        )}
       </p>
     </div>
   );
@@ -3174,17 +3181,11 @@ function InstallGuide() {
 }
 
 
-function ScoreStrip({
-  gameNo,
-  entries,
-}: {
-  gameNo: number;
-  entries: { id: string; name: string; total: number }[];
-}) {
-  const sorted = [...entries].sort((a, b) => b.total - a.total);
+/** 対局中はゲーム番号だけを出す。合計点は各席の枚数表示の横に移した。 */
+function ScoreStrip({ gameNo }: { gameNo: number }) {
   return (
     <p className="shrink-0 px-2 text-center text-[10px] font-bold leading-[13px] text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
-      第{gameNo}ゲーム ｜ 合計 {sorted.map((e) => `${e.name} ${e.total}点`).join(" ・ ")}
+      第{gameNo}ゲーム
     </p>
   );
 }
@@ -3619,6 +3620,7 @@ function LocalGame({
     cardCount: p.hand.length,
     finishRank: p.finishRank,
     prevRank: game.prevRanks?.[p.id] ?? null,
+    total: totals[p.id] ?? 0,
     avatar: avatarMap?.[p.id] ?? null,
   }));
 
@@ -3873,14 +3875,7 @@ function LocalGame({
       showMyTurnBanner={myTurnNotice.showBanner}
       myTurnBannerSeq={myTurnNotice.seq}
     >
-      <ScoreStrip
-        gameNo={gameNo}
-        entries={game.players.map((p) => ({
-          id: p.id,
-          name: p.name,
-          total: totals[p.id] ?? 0,
-        }))}
-      />
+      <ScoreStrip gameNo={gameNo} />
       <DealOverlay deal={deal} />
       <SeatShuffleBanner deal={deal} />
       <Board
@@ -3996,6 +3991,7 @@ function LocalGame({
                   cardCount: viewer.hand.length,
                   finishRank: viewer.finishRank,
                   prevRank: game.prevRanks?.[viewer.id] ?? null,
+                  total: totals[viewer.id] ?? 0,
                 }
               }
               isTurn={current.id === viewerId && !pending && revealCaughtUp && !deal.active}
@@ -4240,6 +4236,49 @@ function PeekHandPopup({
   );
 }
 
+/** 自分が送信したチャット文の履歴（端末の localStorage に最大10件）。
+ * 自分の送信分だけを新しい順に保ち、同じ文は重複させず先頭へ寄せる。
+ * 部屋・対戦が変わっても、アプリを開き直しても残る。 */
+const CHAT_HISTORY_KEY = "daifugo-chat-history";
+const CHAT_HISTORY_MAX = 10;
+
+function loadChatHistory(): string[] {
+  try {
+    const raw = localStorage.getItem(CHAT_HISTORY_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((t): t is string => typeof t === "string" && t.length > 0)
+      .slice(0, CHAT_HISTORY_MAX);
+  } catch {
+    return [];
+  }
+}
+
+function recordChatHistory(text: string): string[] {
+  const next = [text, ...loadChatHistory().filter((t) => t !== text)].slice(
+    0,
+    CHAT_HISTORY_MAX,
+  );
+  try {
+    localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(next));
+  } catch {
+    // 保存できなくても送信自体は続ける
+  }
+  return next;
+}
+
+function removeChatHistory(text: string): string[] {
+  const next = loadChatHistory().filter((t) => t !== text);
+  try {
+    localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(next));
+  } catch {
+    // 保存できなくても表示の削除は行う
+  }
+  return next;
+}
+
 /** 部屋チャットのシート。開いている間も対局は止めない（表示だけの重ね表示）。 */
 function ChatSheet({
   messages,
@@ -4247,6 +4286,7 @@ function ChatSheet({
   draft,
   onDraftChange,
   onSend,
+  onSendText,
   sending,
   onClose,
 }: {
@@ -4255,6 +4295,8 @@ function ChatSheet({
   draft: string;
   onDraftChange: (v: string) => void;
   onSend: () => void;
+  /** 履歴の文をそのまま送信する（素早い再送信用）。 */
+  onSendText?: (text: string) => void;
   sending: boolean;
   onClose: () => void;
 }) {
@@ -4263,6 +4305,17 @@ function ChatSheet({
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
+  // 送信履歴は localStorage が正本。開くたびに読み直し、自分の送信が
+  // 成功して sending が落ちたタイミングでも読み直して最新化する
+  // （記録は送信成功時に OnlineRoom 側で行う）。
+  const [history, setHistory] = useState<string[]>(() => loadChatHistory());
+  const prevSendingRef = useRef(sending);
+  useEffect(() => {
+    if (prevSendingRef.current && !sending) {
+      setHistory(loadChatHistory());
+    }
+    prevSendingRef.current = sending;
+  }, [sending]);
   const fmtTime = (at: number) => {
     const d = new Date(at);
     return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
@@ -4329,6 +4382,41 @@ function ChatSheet({
             })
           )}
         </div>
+        {history.length > 0 && (
+          <div className="border-t border-white/15 px-3 pt-2 pb-1">
+            <p className="text-[11px] font-bold text-white/55">
+              送信履歴（タップで再送信）
+            </p>
+            <div className="mt-1.5 flex max-h-[92px] flex-wrap gap-1.5 overflow-y-auto pb-1">
+              {history.map((t) => (
+                <span
+                  key={t}
+                  className="flex max-w-full items-center gap-0.5 rounded-full border border-[#d8b25c]/50 bg-white/10 py-0.5 pl-3 pr-1"
+                >
+                  <button
+                    type="button"
+                    disabled={sending || !onSendText}
+                    onClick={() => onSendText?.(t)}
+                    aria-label={`「${t}」を再送信`}
+                    className="min-w-0 truncate text-xs font-bold text-[#ffe9a8] disabled:opacity-40"
+                    style={{ minHeight: 0 }}
+                  >
+                    {t}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setHistory(removeChatHistory(t))}
+                    aria-label={`履歴「${t}」を削除`}
+                    className="flex h-5 w-5 flex-none items-center justify-center rounded-full text-[11px] font-extrabold text-white/60"
+                    style={{ minHeight: 0 }}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         <form
           className="flex gap-2 border-t border-white/15 p-3"
           onSubmit={(e) => {
@@ -4364,10 +4452,13 @@ function ChatSheet({
 function ChatStrip({
   messages,
   playerId,
+  unread = 0,
   onOpen,
 }: {
   messages: ChatMsg[];
   playerId: string;
+  /** 未読数（パネルを閉じている間だけ渡される）。0ならバッジは出ない。 */
+  unread?: number;
   onOpen: () => void;
 }) {
   const latest = messages[messages.length - 1];
@@ -4378,15 +4469,27 @@ function ChatStrip({
     <button
       type="button"
       onClick={onOpen}
-      aria-label="チャットを開く"
-      className="mx-3 mb-1 flex h-[38px] flex-none flex-col justify-center rounded-lg border border-[#d8b25c]/70 bg-black/45 px-3 text-left shadow"
+      aria-label={
+        unread > 0 ? `チャットを開く（未読${unread}件）` : "チャットを開く"
+      }
+      className="mx-3 mb-1 flex h-[38px] flex-none cursor-pointer items-center gap-2 rounded-lg border border-[#d8b25c]/70 bg-black/45 px-3 text-left shadow transition-colors active:bg-black/60"
       style={{ minHeight: 0 }}
     >
-      <span className="block truncate text-[11px] font-bold leading-[15px] text-white/55">
-        {line(previous)}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[11px] font-bold leading-[15px] text-white/55">
+          {line(previous)}
+        </span>
+        <span className="block truncate text-[11px] font-extrabold leading-[15px] text-[#ffe9a8]">
+          {latest ? line(latest) : "チャットはここに表示されます"}
+        </span>
       </span>
-      <span className="block truncate text-[11px] font-extrabold leading-[15px] text-[#ffe9a8]">
-        {latest ? line(latest) : "チャットはここに表示されます"}
+      {unread > 0 && (
+        <span className="flex h-5 min-w-5 flex-none items-center justify-center rounded-full bg-[#e23c2e] px-1 text-[11px] font-extrabold text-white shadow">
+          {unread}
+        </span>
+      )}
+      <span aria-hidden className="flex-none text-sm font-extrabold text-[#d8b25c]">
+        ›
       </span>
     </button>
   );
@@ -4764,9 +4867,13 @@ function OnlineGame({
   const chatMut = useMutation({
     mutationFn: async (text: string) =>
       await api.sendChat({ code: code!, playerId, text }),
-    onSuccess: (res) => {
+    onSuccess: (res, text) => {
       if (!res.ok) setError(res.reason);
-      else setChatDraft("");
+      else {
+        setChatDraft("");
+        // 自分の送信分だけを端末の送信履歴へ（最大10件・新しい順）
+        recordChatHistory(text);
+      }
       invalidate();
     },
   });
@@ -4774,6 +4881,12 @@ function OnlineGame({
     const text = chatDraft.trim();
     if (!text || chatMut.isPending) return;
     chatMut.mutate(text.slice(0, 200));
+  };
+  /** 送信履歴の文をそのまま送る（再送信）。 */
+  const sendChatText = (raw: string) => {
+    const text = raw.trim().slice(0, 200);
+    if (!text || chatMut.isPending) return;
+    chatMut.mutate(text);
   };
 
   // 持ち時間タイマー（自分の手番・受け渡し・交換のときだけ進む）
@@ -5213,6 +5326,7 @@ function OnlineGame({
       draft={chatDraft}
       onDraftChange={setChatDraft}
       onSend={sendChat}
+      onSendText={sendChatText}
       sending={chatMut.isPending}
       onClose={() => setChatOpen(false)}
     />
@@ -5352,7 +5466,10 @@ function OnlineGame({
   }
 
   // ----- playing / finished -----
-  const players: BoardPlayer[] = view.players.map((p) => ({ ...p }));
+  const players: BoardPlayer[] = view.players.map((p) => ({
+    ...p,
+    total: shownScores[p.id] ?? 0,
+  }));
   const pending: PendingView | null = view.pending;
   const pendingPlayer = pending
     ? view.players.find((p) => p.id === pending.playerId)
@@ -5500,30 +5617,13 @@ function OnlineGame({
       showMyTurnBanner={myTurnNoticeOnline.showBanner}
       myTurnBannerSeq={myTurnNoticeOnline.seq}
     >
-      <div className="flex items-center justify-between px-3">
-        <span className="w-[76px]" aria-hidden />
-        <p className="text-center text-xs font-bold text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
-          {view.isPermanent ? (
-            <>別班 <span className="text-[#ffe9a8] text-sm">（常設ルーム・オンライン対戦中）</span></>
-          ) : (
-            <>合言葉 <span className="text-[#ffe9a8] tracking-[0.25em] text-sm">{view.code}</span>（オンライン対戦中）</>
-          )}
-        </p>
-        {chatButton}
-      </div>
       <ChatStrip
         messages={chatMessages}
         playerId={playerId}
+        unread={chatOpen ? 0 : unreadChat}
         onOpen={() => setChatOpen(true)}
       />
-      <ScoreStrip
-        gameNo={view.gameNumber}
-        entries={view.players.map((p) => ({
-          id: p.id,
-          name: p.name,
-          total: shownScores[p.id] ?? 0,
-        }))}
-      />
+      <ScoreStrip gameNo={view.gameNumber} />
       <DealOverlay deal={deal} />
       <SeatShuffleBanner deal={deal} />
       <Board
@@ -5640,7 +5740,11 @@ function OnlineGame({
             <SeatFrame
               player={
                 mePlayer
-                  ? { ...mePlayer, cardCount: view.myHand.length }
+                  ? {
+                      ...mePlayer,
+                      cardCount: view.myHand.length,
+                      total: shownScores[playerId] ?? 0,
+                    }
                   : {
                       id: playerId,
                       name: name,
@@ -5648,6 +5752,7 @@ function OnlineGame({
                       cardCount: view.myHand.length,
                       finishRank: null,
                       prevRank: null,
+                      total: shownScores[playerId] ?? 0,
                     }
               }
               isTurn={isMyTurn && revealCaughtUp && !deal.active}
