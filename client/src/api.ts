@@ -73,6 +73,9 @@ export interface RoomView {
     text: string;
     at: number;
   }[];
+  isPermanent: boolean;
+  roomName: string | null;
+  waitingIds: string[];
 }
 
 export interface OkReason {
@@ -102,7 +105,7 @@ export const api = {
     name: string;
     code: string;
     avatar?: string;
-  }) => rpc<OkReason>("joinRoom", args),
+  }) => rpc<OkReason & { code: string }>("joinRoom", args),
   getRoom: (args: { code: string; playerId: string }) =>
     rpc<RoomView>("getRoom", args),
   startGame: (args: { code: string; playerId: string; botCount: number }) =>
@@ -136,6 +139,22 @@ export const api = {
     rpc<OkReason>("backToLobby", args),
   leaveRoom: (args: { code: string; playerId: string }) =>
     rpc<OkReason>("leaveRoom", args),
+  getBeppanStatus: (args: Record<string, never>) =>
+    rpc<{
+      playerCount: number;
+      waitingCount: number;
+      status: "lobby" | "playing" | "finished";
+      isFull: boolean;
+      hostName: string | null;
+    }>("getBeppanStatus", args),
+  joinBeppan: (args: {
+    playerId: string;
+    name: string;
+    rules?: Rules;
+    avatar?: string;
+  }) => rpc<{ ok: boolean; reason: string; code: string }>("joinBeppan", args),
+  updateRoomRules: (args: { code: string; playerId: string; rules: Rules }) =>
+    rpc<OkReason>("updateRoomRules", args),
 };
 
 // Compatibility helpers so App.tsx can keep deriving types from the client:
