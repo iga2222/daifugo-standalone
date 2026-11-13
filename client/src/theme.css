@@ -207,6 +207,10 @@
 }
 .hand-card-shadow { box-shadow: 0 6px 14px rgba(0,0,0,0.45); }
 
+/* 手札が多いときの横スワイプ領域: スクロールバーは出さず、滑る感触だけ残す */
+.hand-scroll { scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.hand-scroll::-webkit-scrollbar { display: none; }
+
 @keyframes chip-in {
   0% { transform: scale(0.5); opacity: 0; }
   60% { transform: scale(1.15); opacity: 1; }
