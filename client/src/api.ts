@@ -66,6 +66,13 @@ export interface RoomView {
     gameNo: number;
     entries: { id: string; name: string; finishRank: number; points: number }[];
   }[];
+  chat: {
+    id: string;
+    playerId: string;
+    name: string;
+    text: string;
+    at: number;
+  }[];
 }
 
 export interface OkReason {
@@ -123,6 +130,8 @@ export const api = {
     playerId: string;
     cardIds: string[];
   }) => rpc<OkReason>("submitExchange", args),
+  sendChat: (args: { code: string; playerId: string; text: string }) =>
+    rpc<OkReason>("sendChat", args),
   backToLobby: (args: { code: string; playerId: string }) =>
     rpc<OkReason>("backToLobby", args),
   leaveRoom: (args: { code: string; playerId: string }) =>
