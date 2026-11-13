@@ -175,6 +175,9 @@ interface BoardPlayer {
   isBot: boolean;
   cardCount: number;
   finishRank: number | null;
+  /** 直前のゲームでの順位（席アイコン右下のバッジ）。無い場合は null で
+   * バッジ自体を出さない（1ゲーム目・途中参加者）。 */
+  prevRank?: number | null;
   isHost?: boolean;
   avatar?: string | null;
 }
@@ -381,7 +384,6 @@ function avatarGradient(seed: string): string {
 /** Wooden-framed seat like the reference design: name plate, avatar, seat badge, card count. */
 function SeatFrame({
   player,
-  seatNo,
   isTurn,
   glow = false,
   fx = null,
@@ -391,7 +393,6 @@ function SeatFrame({
   gauge = null,
 }: {
   player: BoardPlayer;
-  seatNo: number;
   isTurn: boolean;
   /** 今の手番の席を金色に強く光らせる（表示中の手番に連動）。isTurn の控えめなリングより優先。 */
   glow?: boolean;
@@ -486,13 +487,16 @@ function SeatFrame({
               {player.name.slice(0, 1)}
             </span>
           )}
-          <span
-            className={`seat-badge absolute -bottom-1.5 -right-1.5 rounded-full flex items-center justify-center font-extrabold ${
-              large ? "w-6 h-6 text-xs" : "w-5 h-5 text-[11px]"
-            }`}
-          >
-            {seatNo}
-          </span>
+          {player.prevRank != null && (
+            <span
+              className={`seat-badge absolute -bottom-1.5 -right-1.5 rounded-full flex items-center justify-center font-extrabold ${
+                large ? "w-6 h-6 text-xs" : "w-5 h-5 text-[11px]"
+              }`}
+              title={`前のゲームは${player.prevRank}位`}
+            >
+              {player.prevRank}
+            </span>
+          )}
         </div>
       </div>
       <p
@@ -566,10 +570,10 @@ function OpponentSeats({
   onPeek?: (playerId: string) => void;
 }) {
   const viewerIdx = players.findIndex((p) => p.id === viewerId);
-  const ordered: { player: BoardPlayer; seatNo: number }[] = [];
+  const ordered: { player: BoardPlayer }[] = [];
   for (let step = 1; step < players.length; step++) {
     const p = players[(viewerIdx + step) % players.length]!;
-    ordered.push({ player: p, seatNo: ((viewerIdx + step) % players.length) + 1 });
+    ordered.push({ player: p });
   }
   const zones = SEAT_ZONES[Math.max(0, ordered.length - 1)] ?? SEAT_ZONES[0]!;
 
@@ -607,12 +611,11 @@ function OpponentSeats({
       className="relative mx-1 shrink-0"
       style={{ height: "clamp(118px, 15.4dvh, 130px)" }}
     >
-      {ordered.map(({ player, seatNo }, i) => {
+      {ordered.map(({ player }, i) => {
         const zone = zones[Math.min(i, zones.length - 1)]!;
         const seatBody = (
           <SeatFrame
             player={player}
-            seatNo={seatNo}
             isTurn={player.id === currentPlayerId}
             glow={player.id === glowPlayerId}
             fx={seatFx}
@@ -3615,6 +3618,7 @@ function LocalGame({
     isBot: p.isBot,
     cardCount: p.hand.length,
     finishRank: p.finishRank,
+    prevRank: game.prevRanks?.[p.id] ?? null,
     avatar: avatarMap?.[p.id] ?? null,
   }));
 
@@ -3629,11 +3633,6 @@ function LocalGame({
       ? (game.players.find((p) => p.id === peekId && p.id !== viewerId) ??
         null)
       : null;
-  // 席替えイントロの前半は前ゲームの並びで席番号を出す（相手席と揃える）
-  const viewerSeatNo =
-    (deal.displayOrder
-      ? deal.displayOrder.indexOf(viewerId)
-      : game.players.findIndex((p) => p.id === viewerId)) + 1;
   const ownerName = game.field
     ? (game.players.find((p) => p.id === game.field!.ownerId)?.name ?? null)
     : null;
@@ -3996,9 +3995,9 @@ function LocalGame({
                   isBot: viewer.isBot,
                   cardCount: viewer.hand.length,
                   finishRank: viewer.finishRank,
+                  prevRank: game.prevRanks?.[viewer.id] ?? null,
                 }
               }
-              seatNo={viewerSeatNo}
               isTurn={current.id === viewerId && !pending && revealCaughtUp && !deal.active}
               glow={
                 current.id === viewerId &&
@@ -4358,7 +4357,43 @@ function ChatSheet({
   );
 }
 
-/** 新着チャットを画面上部に短く知らせる帯。タップはブロックしない。 */
+/** 対局画面上部の常設チャット欄（オンライン対戦のみ）。
+ * 最新2件を「名前：メッセージ」で2行表示し、新着は下の行へ流れ込む。
+ * メッセージが無い／1件だけのときも高さは固定で、画面が揺れない。
+ * タップでチャットパネル（入力・履歴）が開く。 */
+function ChatStrip({
+  messages,
+  playerId,
+  onOpen,
+}: {
+  messages: ChatMsg[];
+  playerId: string;
+  onOpen: () => void;
+}) {
+  const latest = messages[messages.length - 1];
+  const previous = messages[messages.length - 2];
+  const line = (m: ChatMsg | undefined) =>
+    m ? `${m.playerId === playerId ? "あなた" : m.name}：${m.text}` : " ";
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label="チャットを開く"
+      className="mx-3 mb-1 flex h-[38px] flex-none flex-col justify-center rounded-lg border border-[#d8b25c]/70 bg-black/45 px-3 text-left shadow"
+      style={{ minHeight: 0 }}
+    >
+      <span className="block truncate text-[11px] font-bold leading-[15px] text-white/55">
+        {line(previous)}
+      </span>
+      <span className="block truncate text-[11px] font-extrabold leading-[15px] text-[#ffe9a8]">
+        {latest ? line(latest) : "チャットはここに表示されます"}
+      </span>
+    </button>
+  );
+}
+
+/** 新着チャットを画面上部に短く知らせる帯。タップはブロックしない。
+ * ロビーでのみ使う（対局画面は常設の ChatStrip に一本化）。 */
 function ChatBanner({ msg }: { msg: ChatMsg }) {
   return (
     <div
@@ -5339,12 +5374,6 @@ function OnlineGame({
       ? (view.players.find((p) => p.id === peekId && p.id !== playerId) ??
         null)
       : null;
-  // 席替えイントロの前半は前ゲームの並びで席番号を出す（相手席と揃える）
-  const mySeatNo =
-    (deal.displayOrder
-      ? deal.displayOrder.indexOf(playerId)
-      : view.players.findIndex((p) => p.id === playerId)) + 1;
-
   const myExStep = myExStepOnline;
   const firstExStep = view.exchange?.pending[0];
   const activeExStep = myExStep ?? firstExStep;
@@ -5482,6 +5511,11 @@ function OnlineGame({
         </p>
         {chatButton}
       </div>
+      <ChatStrip
+        messages={chatMessages}
+        playerId={playerId}
+        onOpen={() => setChatOpen(true)}
+      />
       <ScoreStrip
         gameNo={view.gameNumber}
         entries={view.players.map((p) => ({
@@ -5613,9 +5647,9 @@ function OnlineGame({
                       isBot: false,
                       cardCount: view.myHand.length,
                       finishRank: null,
+                      prevRank: null,
                     }
               }
-              seatNo={mySeatNo}
               isTurn={isMyTurn && revealCaughtUp && !deal.active}
               glow={
                 isMyTurn &&
@@ -5749,7 +5783,6 @@ function OnlineGame({
       />
     )}
     {chatSheet}
-    {chatBanner && !chatOpen && <ChatBanner msg={chatBanner} />}
     </>
   );
 }
