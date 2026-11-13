@@ -431,7 +431,7 @@ function SeatFrame({
         </div>
         <div
           className={`relative m-1 rounded-md flex items-center justify-center ${
-            large ? "h-[54px]" : "h-[38px]"
+            large ? "h-[54px]" : "h-[34px]"
           }`}
           style={{ background: avatarGradient(player.id + player.name) }}
         >
@@ -513,29 +513,32 @@ function SeatFrame({
   );
 }
 
+// 左右の席は px 指定で少しだけ下げる（%指定だとコンテナ高さに対して
+// 席本体＋順位ラベルが下にはみ出し、場やログ帯に重なってしまった）。
+// 席本体の高さは約84pxなので、top 32px でもコンテナ内に収まる。
 const SEAT_ZONES: { left: string; top: string }[][] = [
-  [{ left: "50%", top: "0%" }],
+  [{ left: "50%", top: "0px" }],
   [
-    { left: "26%", top: "2%" },
-    { left: "74%", top: "2%" },
+    { left: "26%", top: "6px" },
+    { left: "74%", top: "6px" },
   ],
   [
-    { left: "12%", top: "44%" },
-    { left: "50%", top: "0%" },
-    { left: "88%", top: "44%" },
+    { left: "12%", top: "32px" },
+    { left: "50%", top: "0px" },
+    { left: "88%", top: "32px" },
   ],
   [
-    { left: "12%", top: "44%" },
-    { left: "31%", top: "0%" },
-    { left: "69%", top: "0%" },
-    { left: "88%", top: "44%" },
+    { left: "12%", top: "32px" },
+    { left: "31%", top: "0px" },
+    { left: "69%", top: "0px" },
+    { left: "88%", top: "32px" },
   ],
   [
-    { left: "12%", top: "44%" },
-    { left: "29%", top: "0%" },
-    { left: "50%", top: "0%" },
-    { left: "71%", top: "0%" },
-    { left: "88%", top: "44%" },
+    { left: "12%", top: "32px" },
+    { left: "29%", top: "0px" },
+    { left: "50%", top: "0px" },
+    { left: "71%", top: "0px" },
+    { left: "88%", top: "32px" },
   ],
 ];
 
@@ -600,7 +603,10 @@ function OpponentSeats({
   });
 
   return (
-    <div className="relative h-[118px] mx-1 shrink-0">
+    <div
+      className="relative mx-1 shrink-0"
+      style={{ height: "clamp(118px, 15.4dvh, 130px)" }}
+    >
       {ordered.map(({ player, seatNo }, i) => {
         const zone = zones[Math.min(i, zones.length - 1)]!;
         const seatBody = (
@@ -787,8 +793,8 @@ function FieldPile({
     const stepX = n > 1 ? Math.max(3, Math.min(10, Math.floor(44 / (n - 1)))) : 0;
     const stepY = n > 1 ? Math.max(3, Math.min(13, Math.floor(56 / (n - 1)))) : 0;
     const scale = n > 7 ? 0.8 : n > 4 ? 0.9 : 1;
-    const cw = `calc(clamp(44px, 8.2dvh, 62px) * ${scale})`;
-    const ch = `calc(clamp(64px, 12dvh, 90px) * ${scale})`;
+    const cw = `calc(clamp(40px, 8.2dvh, 62px) * ${scale})`;
+    const ch = `calc(clamp(56px, 11.5dvh, 90px) * ${scale})`;
     const maxCount = list.reduce((m, h) => Math.max(m, h.cards?.length ?? 0), 0);
     const w = `calc(${cw} * ${Math.max(1, maxCount)} - ${Math.max(0, maxCount - 1) * inPlayOverlap}px + ${Math.max(0, n - 1) * stepX}px)`;
     const hgt = `calc(${ch} + ${Math.max(0, n - 1) * stepY}px)`;
@@ -962,7 +968,7 @@ function FieldPile({
   return (
     <div
       ref={rootRef}
-      className="flex-1 min-h-0 flex flex-col items-center justify-center px-2 py-0.5 relative"
+      className="flex-1 min-h-0 flex flex-col items-center justify-center px-2 py-0.5 relative overflow-hidden"
     >
       <div className="flex flex-wrap justify-center gap-1.5 min-h-[20px]">
         {revolution && (
@@ -1853,7 +1859,12 @@ function FanHand({
   const mid = (n - 1) / 2;
   // Measure the actual rendered width so the fan fits its area when it can.
   const avail = (wrapW > 0 ? wrapW : 360) - 6;
-  let cardW = 58;
+  // カードサイズは枚数によらず通常サイズ（幅58px）を上限とする。
+  // 残り1枚（や0枚）のときも標準サイズのまま表示する: 以前は n=1 で
+  // step=0 になり「詰め込み」分岐に入ってカード幅が画面幅いっぱいまで
+  // 広がり、出すボタンに届かなくなった。
+  const MAX_CARD_W = 58;
+  let cardW = MAX_CARD_W;
   let step = 0;
   if (n > 1) {
     step = Math.min(36, (avail - cardW) / (n - 1));
@@ -1861,15 +1872,14 @@ function FanHand({
   // スクロールモード: 扇の重なりがタップできる幅（20px）を下回るほど
   // 枚数が多いときは、カードを無理に縮めて見切れさせるのではなく、
   // 読みやすい大きさのまま横スワイプで端のカードまで届かせる。
+  // （n>=2 では step<20 の間は常にこちらに入るため、幅を詰める分岐は
+  // 不要。n<=1 は上の初期値のまま通常サイズで出す。）
   const scrollable = n > 1 && step < 20;
   if (scrollable) {
     cardW = 54;
     step = 24;
-  } else if (step < 13) {
-    // Too many cards: tighten to a 13px sliver and shrink the cards instead.
-    step = 13;
-    cardW = Math.max(38, avail - step * (n - 1));
   }
+  if (cardW > MAX_CARD_W) cardW = MAX_CARD_W;
   const cardH = Math.round(cardW * 1.45);
   const padX = 12;
   const contentW = cardW + step * Math.max(0, n - 1) + padX * 2;
@@ -3165,7 +3175,7 @@ function ScoreStrip({
 }) {
   const sorted = [...entries].sort((a, b) => b.total - a.total);
   return (
-    <p className="shrink-0 truncate px-3 text-center text-[10px] font-bold leading-4 text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+    <p className="shrink-0 px-2 text-center text-[10px] font-bold leading-[13px] text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
       第{gameNo}ゲーム ｜ 合計 {sorted.map((e) => `${e.name} ${e.total}点`).join(" ・ ")}
     </p>
   );
