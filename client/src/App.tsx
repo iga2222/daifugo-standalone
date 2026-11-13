@@ -1393,17 +1393,31 @@ function Board({
   const dispRef = useRef(disp);
   // あがり演出用: 順位が確定した人を「上がりの手が表示される位置（atDisp）」
   // と一緒に待ち行列へ入れ、表示キューがそこへ到達したらバナーを出す。
-  const pendingFinishRef = useRef<
-    {
-      playerId: string;
-      name: string;
-      rank: number;
-      total: number;
-      avatar: string | null;
-      atDisp: number;
-    }[]
-  >([]);
+  // 待ち行列は ref と state の両方で持つ: state 側があることで、検知した
+  // コミット内に必ず再レンダーが起き、「演出待ち」を親へ確実に伝えられる
+  // （ref だけだと、検知と表示が同じコミットに重なった場合に親への通知が
+  // 遅れて結果表示に潰される余地があった）。
+  type PendingFinish = {
+    playerId: string;
+    name: string;
+    rank: number;
+    total: number;
+    avatar: string | null;
+    atDisp: number;
+  };
+  const [pendingFinishes, setPendingFinishes] = useState<PendingFinish[]>([]);
+  const pendingFinishRef = useRef<PendingFinish[]>([]);
+  const setPending = (next: PendingFinish[]) => {
+    pendingFinishRef.current = next;
+    setPendingFinishes(next);
+  };
   const shownFinishRef = useRef<Set<string>>(new Set());
+  // マウント時点（またはゲーム切り替え直後）に既に確定していた順位は
+  // 「見始める前から終わっていた」ものとして基準に取り込み、バナーの
+  // 対象から外す（オンラインの再入室・再読み込みで過去の上がりを
+  // 後追い再生しないため）。基準の取り込みは各ゲームで一度だけ行う。
+  const baselineFinishRef = useRef<Set<string>>(new Set());
+  const baselineDoneRef = useRef(false);
   // あがり演出の表示中は次の手の再生を止める（演出を見せてから次へ進む）。
   const finishHoldRef = useRef(false);
   const [ghost, setGhost] = useState<HistoryView[] | null>(null);
@@ -1455,8 +1469,10 @@ function Board({
     dispRef.current = [];
     setDisp([]);
     setGhost(null);
-    pendingFinishRef.current = [];
+    setPending([]);
     shownFinishRef.current = new Set();
+    baselineFinishRef.current = new Set();
+    baselineDoneRef.current = false;
     startStepping(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replayKey]);
@@ -1479,8 +1495,12 @@ function Board({
         .filter((h) => h.cards && h.cards.length > 0);
       dispRef.current = [];
       setDisp([]);
-      pendingFinishRef.current = [];
+      // 履歴が巻き戻るのは新しいゲームの開始だけ（履歴は追記のみ）。
+      // あがり演出の管理も新しいゲーム用に初期化し直す。
+      setPending([]);
       shownFinishRef.current = new Set();
+      baselineFinishRef.current = new Set();
+      baselineDoneRef.current = false;
       if (oldPlays.length > 0 && !prefersReducedMotion()) {
         setGhost(oldPlays);
         window.clearTimeout(ghostTimer.current);
@@ -1592,7 +1612,7 @@ function Board({
     const busy =
       banner?.kind === "finish" ||
       queueRef.current.some((b) => b.kind === "finish") ||
-      pendingFinishRef.current.length > 0;
+      pendingFinishes.length > 0;
     if (busy !== lastFinishBusyRef.current) {
       lastFinishBusyRef.current = busy;
       finishBusyRef.current?.(busy);
@@ -1612,9 +1632,9 @@ function Board({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [disp]);
 
-  // あがり演出: 順位の確定（finishRank が null → 順位）を検知したら、
-  // その人の「上がりの手」が表示キューで表示される位置（atDisp）を記録
-  // して待ち行列に入れ、表示がそこへ到達した時点でバナーキューへ流す。
+  // あがり演出: 順位が確定した人を検知したら、その人の「上がりの手」が
+  // 表示キューで表示される位置（atDisp）を記録して待ち行列に入れ、
+  // 表示がそこへ到達した時点でバナーキューへ流す。
   // 順位はエンジンが最終順位として確定させた値を使う: 都落ち・下剋上・
   // 残り1人の最下位確定も、原因となった上がりと同じ状態更新で一括して
   // 確定するため、ここで出す称号が後から食い違うことはない。
@@ -1622,11 +1642,15 @@ function Board({
   const flushPendingFinishes = () => {
     const pend = pendingFinishRef.current;
     if (pend.length === 0) return;
+    // 表示が最新の履歴に追いついたら、位置計算の誤差があっても残りの
+    // 演出は必ず流す（最後の1人の自動確定など、対応する手が無い決着で
+    // atDisp が届かなくなるケースへの保険）。
+    const caughtUpNow = dispRef.current.length >= historyRef.current.length;
     const ready = pend
-      .filter((f) => f.atDisp <= dispRef.current.length)
+      .filter((f) => f.atDisp <= dispRef.current.length || caughtUpNow)
       .sort((a, b) => a.rank - b.rank);
     if (ready.length === 0) return;
-    pendingFinishRef.current = pend.filter((f) => !ready.includes(f));
+    setPending(pend.filter((f) => !ready.includes(f)));
     pushRef.current(
       ready.map((f) => ({
         kind: "finish" as const,
@@ -1642,46 +1666,55 @@ function Board({
   const flushFinishRef = useRef(flushPendingFinishes);
   flushFinishRef.current = flushPendingFinishes;
 
-  const prevRanksRef = useRef<Map<string, number | null> | null>(null);
+  // 検知は「前回スナップショットとの差分（null → 順位）」に頼らない:
+  // オンラインのポーリングでは状態が大きく飛ぶことがあり、差分取りの
+  // 前提（毎回連続したスナップショットが届く）が崩れると上がりを取り
+  // こぼす。代わりに「順位が確定していて、まだ出しておらず、見始める
+  // 前から確定していたのでもない人」を毎回洗い出す。これなら検知の
+  // 機会を1回逃しても、次の状態更新で必ず拾い直せる。
   useEffect(() => {
-    const prev = prevRanksRef.current;
-    const next = new Map(players.map((p) => [p.id, p.finishRank]));
-    if (prev) {
-      const fresh = players
-        .filter(
-          (p) =>
-            p.finishRank !== null &&
-            prev.get(p.id) === null &&
-            !shownFinishRef.current.has(p.id),
-        )
-        .sort((a, b) => (a.finishRank ?? 0) - (b.finishRank ?? 0));
-      if (fresh.length > 0) {
-        const hist = historyRef.current;
-        // 各人の最後の履歴エントリ = 上がりの手（7渡し・10捨ての受け渡し
-        // エントリも含む）。専用エントリが無い決着（4止め等）は履歴末尾。
-        const atOf = (playerId: string) => {
-          for (let i = hist.length - 1; i >= 0; i--) {
-            if (hist[i]!.playerId === playerId) return i + 1;
-          }
-          return hist.length;
-        };
-        // 同時確定は原因となった手の位置にそろえる（一番遅い位置を採用）。
-        const batchAt = Math.max(...fresh.map((p) => atOf(p.id)));
-        for (const p of fresh) {
-          shownFinishRef.current.add(p.id);
-          pendingFinishRef.current.push({
-            playerId: p.id,
-            name: p.name,
-            rank: p.finishRank!,
-            total: players.length,
-            avatar: p.avatar ?? null,
-            atDisp: batchAt,
-          });
-        }
-        flushFinishRef.current();
+    if (!baselineDoneRef.current) {
+      baselineDoneRef.current = true;
+      for (const p of players) {
+        if (p.finishRank !== null) baselineFinishRef.current.add(p.id);
       }
+      return;
     }
-    prevRanksRef.current = next;
+    const fresh = players
+      .filter(
+        (p) =>
+          p.finishRank !== null &&
+          !shownFinishRef.current.has(p.id) &&
+          !baselineFinishRef.current.has(p.id) &&
+          !pendingFinishRef.current.some((f) => f.playerId === p.id),
+      )
+      .sort((a, b) => (a.finishRank ?? 0) - (b.finishRank ?? 0));
+    if (fresh.length > 0) {
+      const hist = historyRef.current;
+      // 各人の最後の履歴エントリ = 上がりの手（7渡し・10捨ての受け渡し
+      // エントリも含む）。専用エントリが無い決着（4止め等）は履歴末尾。
+      const atOf = (playerId: string) => {
+        for (let i = hist.length - 1; i >= 0; i--) {
+          if (hist[i]!.playerId === playerId) return i + 1;
+        }
+        return hist.length;
+      };
+      // 同時確定は原因となった手の位置にそろえる（一番遅い位置を採用）。
+      const batchAt = Math.max(...fresh.map((p) => atOf(p.id)));
+      const add: PendingFinish[] = fresh.map((p) => {
+        shownFinishRef.current.add(p.id);
+        return {
+          playerId: p.id,
+          name: p.name,
+          rank: p.finishRank!,
+          total: players.length,
+          avatar: p.avatar ?? null,
+          atDisp: batchAt,
+        };
+      });
+      setPending([...pendingFinishRef.current, ...add]);
+      flushFinishRef.current();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [players]);
 
@@ -1815,12 +1848,12 @@ function Board({
   );
 }
 
-/** Fanned (arched) hand at the bottom of the table. While the fan fits the
- * screen it stays centered as before, shrinking its overlap as the hand
- * grows. Once the overlap would drop below a tappable width, the hand keeps
- * a comfortable card size and becomes a horizontally swipeable strip, so
- * the edge cards stay reachable: a drag scrolls, a light tap still selects
- * (a click that follows a real scroll/drag is swallowed). */
+/** Hand at the bottom of the table. The strip is ALWAYS horizontally
+ * swipeable, whatever the card count: cards keep one comfortable fixed
+ * size with a tappable spacing (no fan squeeze). When everything fits the
+ * strip stays centered; when it overflows, a swipe reaches the edge cards:
+ * a drag scrolls, a light tap still selects (a click that follows a real
+ * scroll/drag is swallowed). */
 function FanHand({
   cards,
   selected,
@@ -1857,38 +1890,26 @@ function FanHand({
 
   const n = shownCards.length;
   const mid = (n - 1) / 2;
-  // Measure the actual rendered width so the fan fits its area when it can.
+  // Measure the actual rendered width so a fitting hand can be centered.
   const avail = (wrapW > 0 ? wrapW : 360) - 6;
-  // カードサイズは枚数によらず通常サイズ（幅58px）を上限とする。
-  // 残り1枚（や0枚）のときも標準サイズのまま表示する: 以前は n=1 で
-  // step=0 になり「詰め込み」分岐に入ってカード幅が画面幅いっぱいまで
-  // 広がり、出すボタンに届かなくなった。
-  const MAX_CARD_W = 58;
-  let cardW = MAX_CARD_W;
-  let step = 0;
-  if (n > 1) {
-    step = Math.min(36, (avail - cardW) / (n - 1));
-  }
-  // スクロールモード: 扇の重なりがタップできる幅（20px）を下回るほど
-  // 枚数が多いときは、カードを無理に縮めて見切れさせるのではなく、
-  // 読みやすい大きさのまま横スワイプで端のカードまで届かせる。
-  // （n>=2 では step<20 の間は常にこちらに入るため、幅を詰める分岐は
-  // 不要。n<=1 は上の初期値のまま通常サイズで出す。）
-  const scrollable = n > 1 && step < 20;
-  if (scrollable) {
-    cardW = 54;
-    step = 24;
-  }
-  if (cardW > MAX_CARD_W) cardW = MAX_CARD_W;
+  // 常時スワイプ帯: カードは枚数によらず固定の読みやすいサイズ・間隔で
+  // 並べ、扇の詰め込みはしない。収まる枚数のときは中央寄せ、はみ出す
+  // ときは横スクロールで端まで届く。
+  // カード幅は通常サイズ（56px）固定: 残り1枚でもこの大きさのまま
+  // （以前 n=1 でカード幅が画面幅いっぱいに広がった不具合の再発防止）。
+  const cardW = 56;
+  const step = 34;
   const cardH = Math.round(cardW * 1.45);
   const padX = 12;
-  const contentW = cardW + step * Math.max(0, n - 1) + padX * 2;
-  const boxH = cardH + (scrollable ? 30 : 22);
+  const stripW = cardW + step * Math.max(0, n - 1);
+  const contentW = stripW + padX * 2;
+  const overflows = contentW > avail;
+  // 収まるときの左端オフセット（中央寄せ）。はみ出すときは左パディング。
+  const startX = overflows ? padX : Math.max(padX, (avail - stripW) / 2);
+  const innerW = overflows ? contentW : avail;
+  const boxH = cardH + 30;
   const arc = (rel: number) =>
-    Math.min(
-      Math.abs(rel) * Math.abs(rel) * (scrollable ? 0.22 : 0.5),
-      scrollable ? 9 : 16,
-    );
+    Math.min(Math.abs(rel) * Math.abs(rel) * 0.22, 9);
 
   // ---- スワイプ（スクロール）とタップ（選択）の競合防止 ----
   // 指のスワイプ（ネイティブスクロール）やマウスのドラッグで実際に
@@ -1914,16 +1935,18 @@ function FanHand({
   useEffect(() => {
     const prev = prevCountRef.current;
     prevCountRef.current = cards.length;
-    if (scrollable && cards.length - prev >= 4) {
+    if (cards.length - prev >= 4) {
       scrollRef.current?.scrollTo({ left: 0 });
     }
     syncEdges();
-  }, [cards.length, scrollable, wrapW]);
+    // innerW（表示枚数）も依存に入れる: 配札アニメで表示枚数が増えて
+    // 帯がはみ出し始めた時点で、端の矢印を正しく出し直すため。
+  }, [cards.length, wrapW, innerW]);
 
   // デスクトップ: 縦ホイールを横スクロールに変換する。
   useEffect(() => {
     const el = scrollRef.current;
-    if (!el || !scrollable) return;
+    if (!el) return;
     const onWheel = (e: WheelEvent) => {
       if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
         e.preventDefault();
@@ -1932,7 +1955,7 @@ function FanHand({
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [scrollable]);
+  }, []);
 
   const endGesture = () => {
     const g = gestureRef.current;
@@ -1962,64 +1985,45 @@ function FanHand({
     >
       <div
         ref={scrollRef}
-        className={
-          scrollable
-            ? "hand-scroll absolute inset-0 overflow-x-auto overflow-y-hidden"
-            : "absolute inset-0"
-        }
-        style={scrollable ? { touchAction: "pan-x" } : undefined}
-        onScroll={scrollable ? syncEdges : undefined}
-        onPointerDown={
-          scrollable
-            ? (e) => {
-                suppressRef.current = false;
-                gestureRef.current = {
-                  x: e.clientX,
-                  sl: scrollRef.current?.scrollLeft ?? 0,
-                  dragged: false,
-                };
-              }
-            : undefined
-        }
-        onPointerMove={
-          scrollable
-            ? (e) => {
-                const g = gestureRef.current;
-                if (!g) return;
-                const dx = e.clientX - g.x;
-                if (Math.abs(dx) > 8) g.dragged = true;
-                // マウスはネイティブの横スクロールが無いのでドラッグで滑らせる。
-                if (g.dragged && e.pointerType === "mouse" && e.buttons > 0) {
-                  const el = scrollRef.current;
-                  if (el) el.scrollLeft = g.sl - dx;
-                }
-              }
-            : undefined
-        }
-        onPointerUp={scrollable ? endGesture : undefined}
-        onPointerCancel={scrollable ? endGesture : undefined}
+        className="hand-scroll absolute inset-0 overflow-x-auto overflow-y-hidden"
+        style={{ touchAction: "pan-x" }}
+        onScroll={syncEdges}
+        onPointerDown={(e) => {
+          suppressRef.current = false;
+          gestureRef.current = {
+            x: e.clientX,
+            sl: scrollRef.current?.scrollLeft ?? 0,
+            dragged: false,
+          };
+        }}
+        onPointerMove={(e) => {
+          const g = gestureRef.current;
+          if (!g) return;
+          const dx = e.clientX - g.x;
+          if (Math.abs(dx) > 8) g.dragged = true;
+          // マウスはネイティブの横スクロールが無いのでドラッグで滑らせる。
+          if (g.dragged && e.pointerType === "mouse" && e.buttons > 0) {
+            const el = scrollRef.current;
+            if (el) el.scrollLeft = g.sl - dx;
+          }
+        }}
+        onPointerUp={endGesture}
+        onPointerCancel={endGesture}
       >
-        <div
-          className="relative h-full"
-          style={scrollable ? { width: contentW } : undefined}
-        >
+        <div className="relative h-full" style={{ width: innerW }}>
           {shownCards.map((c, i) => {
             const rel = i - mid;
             const isSel = selected.includes(c.id);
-            const rot = scrollable
-              ? Math.max(-8, Math.min(8, rel * 1.1))
-              : Math.max(-17, Math.min(17, rel * 3.2));
+            const rot = Math.max(-8, Math.min(8, rel * 1.1));
             const playable = playableIds ? playableIds.has(c.id) : null;
             const glowing =
               playable === true || (glowIds ? glowIds.has(c.id) : false);
             return (
               <div
                 key={c.id}
-                className={`absolute ${scrollable ? "bottom-1.5" : "bottom-0.5"} ${glowing ? "playable-glow" : ""}`}
+                className={`absolute bottom-1.5 ${glowing ? "playable-glow" : ""}`}
                 style={{
-                  left: scrollable
-                    ? `${padX + cardW / 2 + i * step}px`
-                    : `calc(50% + ${rel * step}px)`,
+                  left: `${startX + cardW / 2 + i * step}px`,
                   transform: `translateX(-50%) rotate(${rot}deg) translateY(${arc(rel) + (isSel ? -20 : 0)}px)`,
                   transformOrigin: "50% 130%",
                   transition:
@@ -2043,7 +2047,7 @@ function FanHand({
           })}
         </div>
       </div>
-      {scrollable && edges.left && (
+      {overflows && edges.left && (
         <div
           aria-hidden
           className="pointer-events-none absolute inset-y-0 left-0 z-50 flex w-7 items-center justify-start bg-gradient-to-r from-black/45 to-transparent pl-0.5"
@@ -2053,7 +2057,7 @@ function FanHand({
           </span>
         </div>
       )}
-      {scrollable && edges.right && (
+      {overflows && edges.right && (
         <div
           aria-hidden
           className="pointer-events-none absolute inset-y-0 right-0 z-50 flex w-7 items-center justify-end bg-gradient-to-l from-black/45 to-transparent pr-0.5"
@@ -3165,6 +3169,7 @@ function InstallGuide() {
     </section>
   );
 }
+
 
 function ScoreStrip({
   gameNo,
