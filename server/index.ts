@@ -337,6 +337,21 @@ function toView(code: string, data: RoomData, playerId: string) {
     ...waiting.filter((w) => !baseRoster.some((p) => p.id === w.id)),
   ];
   const me = game?.players.find((p) => p.id === playerId);
+  // 覗き見（上がった人だけ）: 取得者本人が上がり済みで対局が続いている間
+  // だけ、他の全員の残り手札を渡す。上がり済みの相手は空配列（0枚）になる。
+  // 未上がりの人には他人の手札を一切送らない。
+  const peekHands: Record<string, { id: string; suit: string; rank: number }[]> = {};
+  if (
+    game &&
+    data.status === "playing" &&
+    game.status === "playing" &&
+    me &&
+    me.finishRank !== null
+  ) {
+    for (const p of game.players) {
+      if (p.id !== playerId) peekHands[p.id] = [...p.hand];
+    }
+  }
   return {
     found: true,
     code,
@@ -362,6 +377,7 @@ function toView(code: string, data: RoomData, playerId: string) {
       };
     }),
     myHand: me ? me.hand : [],
+    peekHands,
     field: game?.field
       ? { cards: game.field.cards, ownerId: game.field.ownerId }
       : null,
@@ -435,6 +451,7 @@ function emptyView(code: string) {
     rules: { ...DEFAULT_RULES },
     players: [],
     myHand: [],
+    peekHands: {},
     field: null,
     currentPlayerId: null,
     revolution: false,
