@@ -72,7 +72,14 @@ interface RoomData {
   matchEnded: boolean;
   gameHistory: GameResultRecord[];
   chat: ChatMessage[];
+  isPermanent?: boolean;
+  waiting?: RosterPlayer[];
 }
+
+const PERMANENT_ROOM_CODE = "BEP1";
+const PERMANENT_ROOM_NAME = "別班";
+/** 隠れ部屋「別班」への秘密の言葉。変更はこの1か所だけ。 */
+const PERMANENT_ROOM_SECRET = "別班";
 
 function sanitizeAvatar(v: unknown): string | null {
   if (typeof v !== "string") return null;
@@ -187,10 +194,86 @@ function restoreRooms() {
   }
 }
 
+function createEmptyPermanentRoom(): RoomData {
+  return {
+    hostId: "",
+    status: "lobby",
+    rules: { ...DEFAULT_RULES },
+    roster: [],
+    game: null,
+    prevWinnerId: null,
+    prevRanks: null,
+    scores: {},
+    gameNumber: 1,
+    scored: false,
+    matchEnded: false,
+    gameHistory: [],
+    chat: [],
+    isPermanent: true,
+    waiting: [],
+  };
+}
+function ensurePermanentRoom(): RoomData {
+  const existing = loadRoom(PERMANENT_ROOM_CODE);
+  if (existing) return existing;
+  const data = createEmptyPermanentRoom();
+  saveRoom(PERMANENT_ROOM_CODE, data);
+  return data;
+}
+function syncPermanentHost(data: RoomData) {
+  if (!data.isPermanent) return;
+  const humans = data.roster.filter((p) => !p.isBot);
+  data.hostId = humans[0]?.id ?? "";
+}
+function resetPermanentIfEmpty(data: RoomData) {
+  if (!data.isPermanent) return;
+  const humans = data.roster.filter((p) => !p.isBot).length;
+  if (humans === 0 && (data.waiting ?? []).length === 0 && data.status === "lobby") {
+    const fresh = createEmptyPermanentRoom();
+    data.hostId = fresh.hostId;
+    data.rules = fresh.rules;
+    data.game = null;
+    data.scores = {};
+    data.gameNumber = 1;
+    data.scored = false;
+    data.matchEnded = false;
+    data.gameHistory = [];
+    data.chat = [];
+    data.prevWinnerId = null;
+    data.prevRanks = null;
+  }
+}
+function joinPermanentRoomData(
+  data: RoomData,
+  playerId: string,
+  name: string,
+  avatar: unknown,
+  rules?: Rules,
+): { ok: boolean; reason: string } {
+  const av = sanitizeAvatar(avatar);
+  const inRoster = data.roster.find((p) => p.id === playerId);
+  if (inRoster) { inRoster.avatar = av; inRoster.name = name; return { ok: true, reason: "" }; }
+  data.waiting = Array.isArray(data.waiting) ? data.waiting : [];
+  const inWaiting = data.waiting.find((p) => p.id === playerId);
+  if (inWaiting) { inWaiting.avatar = av; inWaiting.name = name; return { ok: true, reason: "" }; }
+  if (data.status === "lobby") {
+    if (data.roster.filter((p) => !p.isBot).length >= 6) return { ok: false, reason: "別班は満員です（最大6人）" };
+    const wasEmpty = data.roster.filter((p) => !p.isBot).length === 0;
+    data.roster.push({ id: playerId, name, isBot: false, avatar: av });
+    if (wasEmpty) { data.hostId = playerId; if (rules) data.rules = normalizeRules(rules); } else syncPermanentHost(data);
+    return { ok: true, reason: "" };
+  }
+  const inGameCount = data.game ? data.game.players.length : data.roster.length;
+  if (inGameCount + data.waiting.length >= 6) return { ok: false, reason: "別班は満員です（最大6人）" };
+  data.waiting.push({ id: playerId, name, isBot: false, avatar: av });
+  return { ok: true, reason: "" };
+}
+
 function sweepOldRooms() {
   const now = Date.now();
   let removed = false;
   for (const [code, at] of touchedAt) {
+    if (code === PERMANENT_ROOM_CODE) continue;
     if (now - at > ROOM_TTL_MS) {
       rooms.delete(code);
       touchedAt.delete(code);
@@ -215,6 +298,8 @@ function loadRoom(code: string): RoomData | null {
   copy.matchEnded = copy.matchEnded ?? false;
   copy.gameHistory = Array.isArray(copy.gameHistory) ? copy.gameHistory : [];
   copy.chat = Array.isArray(copy.chat) ? copy.chat : [];
+  copy.waiting = Array.isArray(copy.waiting) ? copy.waiting : [];
+  copy.isPermanent = copy.isPermanent ?? code === PERMANENT_ROOM_CODE;
   return copy;
 }
 
@@ -232,20 +317,29 @@ function makeCode(): string {
 
 function toView(code: string, data: RoomData, playerId: string) {
   const game = data.game;
-  const roster = game
+  const waiting = data.waiting ?? [];
+  const baseRoster = game
     ? game.players.map((p) => ({ id: p.id, name: p.name, isBot: p.isBot }))
     : data.roster;
+  const roster = [
+    ...baseRoster,
+    ...waiting.filter((w) => !baseRoster.some((p) => p.id === w.id)),
+  ];
   const me = game?.players.find((p) => p.id === playerId);
   return {
     found: true,
     code,
     status: data.status,
     isHost: data.hostId === playerId,
-    inRoom: roster.some((p) => p.id === playerId),
+    inRoom:
+      roster.some((p) => p.id === playerId) ||
+      data.roster.some((p) => p.id === playerId),
     rules: data.rules,
     players: roster.map((p) => {
       const gp = game?.players.find((g) => g.id === p.id);
-      const rosterEntry = data.roster.find((r) => r.id === p.id);
+      const rosterEntry =
+        data.roster.find((r) => r.id === p.id) ??
+        waiting.find((r) => r.id === p.id);
       return {
         id: p.id,
         name: p.name,
@@ -311,6 +405,12 @@ function toView(code: string, data: RoomData, playerId: string) {
     matchEnded: data.matchEnded,
     gameHistory: data.gameHistory ?? [],
     chat: data.chat ?? [],
+    isPermanent: !!data.isPermanent || code === PERMANENT_ROOM_CODE,
+    roomName:
+      !!data.isPermanent || code === PERMANENT_ROOM_CODE
+        ? PERMANENT_ROOM_NAME
+        : null,
+    waitingIds: waiting.map((w) => w.id),
   };
 }
 
@@ -343,6 +443,9 @@ function emptyView(code: string) {
     matchEnded: false,
     gameHistory: [],
     chat: [],
+    isPermanent: false,
+    roomName: null,
+    waitingIds: [],
   };
 }
 
@@ -383,29 +486,47 @@ const handlers: Record<string, (args: Args) => unknown> = {
       matchEnded: false,
       gameHistory: [],
       chat: [],
+      isPermanent: false,
+      waiting: [],
     };
     saveRoom(code, data);
     return { code };
   },
 
   joinRoom(args) {
-    const code = str(args.code);
+    const input = str(args.code).trim();
+    // 秘密の言葉の判定は通常の部屋検索より先に行う
+    if (input === PERMANENT_ROOM_SECRET || input === PERMANENT_ROOM_CODE) {
+      const pdata = ensurePermanentRoom();
+      const res = joinPermanentRoomData(
+        pdata,
+        str(args.playerId).slice(0, 64),
+        str(args.name).slice(0, 16) || "プレイヤー",
+        args.avatar,
+      );
+      if (res.ok) saveRoom(PERMANENT_ROOM_CODE, pdata);
+      return { ...res, code: PERMANENT_ROOM_CODE };
+    }
+    if (!/^\d{4}$/.test(input)) {
+      return { ok: false, reason: "その合言葉の部屋が見つかりません", code: "" };
+    }
+    const code = input;
     const playerId = str(args.playerId).slice(0, 64);
     const name = str(args.name).slice(0, 16) || "プレイヤー";
     const data = loadRoom(code);
-    if (!data) return { ok: false, reason: "その合言葉の部屋が見つかりません" };
+    if (!data) return { ok: false, reason: "その合言葉の部屋が見つかりません", code: "" };
     const existing = data.roster.find((p) => p.id === playerId);
     if (existing) {
       existing.avatar = sanitizeAvatar(args.avatar);
       existing.name = name;
       saveRoom(code, data);
-      return { ok: true, reason: "" };
+      return { ok: true, reason: "", code };
     }
     if (data.status !== "lobby") {
-      return { ok: false, reason: "対局が始まっているため入れません" };
+      return { ok: false, reason: "対局が始まっているため入れません", code: "" };
     }
     if (data.roster.length >= 6) {
-      return { ok: false, reason: "部屋がいっぱいです（最大6人）" };
+      return { ok: false, reason: "部屋がいっぱいです（最大6人）", code: "" };
     }
     data.roster.push({
       id: playerId,
@@ -414,11 +535,15 @@ const handlers: Record<string, (args: Args) => unknown> = {
       avatar: sanitizeAvatar(args.avatar),
     });
     saveRoom(code, data);
-    return { ok: true, reason: "" };
+    return { ok: true, reason: "", code };
   },
 
   getRoom(args) {
     const code = str(args.code);
+    if (code === PERMANENT_ROOM_CODE) {
+      const pdata = ensurePermanentRoom();
+      return toView(code, pdata, str(args.playerId));
+    }
     const data = loadRoom(code);
     if (!data) return emptyView(code);
     return toView(code, data, str(args.playerId));
@@ -432,7 +557,11 @@ const handlers: Record<string, (args: Args) => unknown> = {
     if (data.hostId !== playerId) {
       return { ok: false, reason: "ホストだけが開始できます" };
     }
-    const humans = data.roster.filter((p) => !p.isBot);
+    const waitingHumans = (data.waiting ?? []).filter((p) => !p.isBot);
+    const humans = [
+      ...data.roster.filter((p) => !p.isBot),
+      ...waitingHumans.filter((w) => !data.roster.some((p) => p.id === w.id)),
+    ];
     const botCount = Math.max(0, Math.min(5, Math.floor(num(args.botCount))));
     const total = humans.length + botCount;
     if (total < 2) return { ok: false, reason: "2人以上で始めてください" };
@@ -442,6 +571,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
       roster.push({ id: `bot-${i + 1}`, name: `CPU ${i + 1}`, isBot: true });
     }
     data.roster = roster;
+    data.waiting = [];
     data.scores = {};
     data.gameNumber = 1;
     data.scored = false;
@@ -476,6 +606,16 @@ const handlers: Record<string, (args: Args) => unknown> = {
       return { ok: false, reason: "対局が終わってから次のゲームへ進めます" };
     }
     capturePrev(data);
+    if (data.waiting && data.waiting.length > 0) {
+      const bots = data.roster.filter((p) => p.isBot);
+      const humansIn = data.roster.filter((p) => !p.isBot);
+      data.roster = [
+        ...humansIn,
+        ...data.waiting.filter((w) => !humansIn.some((p) => p.id === w.id)),
+        ...bots,
+      ].slice(0, 6);
+      data.waiting = [];
+    }
     data.game = createGame(data.roster, data.rules, {
       winnerId: data.prevWinnerId,
       ranks: data.prevRanks ?? undefined,
@@ -591,7 +731,13 @@ const handlers: Record<string, (args: Args) => unknown> = {
     if (data.hostId !== str(args.playerId)) {
       return { ok: false, reason: "ホストだけが操作できます" };
     }
-    data.roster = data.roster.filter((p) => !p.isBot);
+    data.roster = [
+      ...data.roster.filter((p) => !p.isBot),
+      ...(data.waiting ?? []).filter(
+        (w) => !data.roster.some((p) => p.id === w.id),
+      ),
+    ];
+    data.waiting = [];
     data.game = null;
     data.status = "lobby";
     data.scores = {};
@@ -610,7 +756,9 @@ const handlers: Record<string, (args: Args) => unknown> = {
     const data = loadRoom(code);
     if (!data) return { ok: false, reason: "部屋が見つかりません" };
     if (!text) return { ok: false, reason: "メッセージが空です" };
-    const me = data.roster.find((p) => p.id === playerId && !p.isBot);
+    const me =
+      data.roster.find((p) => p.id === playerId && !p.isBot) ??
+      (data.waiting ?? []).find((p) => p.id === playerId && !p.isBot);
     if (!me) return { ok: false, reason: "部屋のメンバーではありません" };
     data.chat = Array.isArray(data.chat) ? data.chat : [];
     data.chat.push({
@@ -625,8 +773,74 @@ const handlers: Record<string, (args: Args) => unknown> = {
     return { ok: true, reason: "" };
   },
 
+  getBeppanStatus() {
+    const data = ensurePermanentRoom();
+    const waitingCount = (data.waiting ?? []).length;
+    const humanCount = data.roster.filter((p) => !p.isBot).length + waitingCount;
+    const inGameCount = data.game ? data.game.players.length : data.roster.length;
+    const isFull =
+      data.status === "lobby"
+        ? data.roster.filter((p) => !p.isBot).length >= 6
+        : inGameCount + waitingCount >= 6;
+    const host = data.roster.find((p) => p.id === data.hostId);
+    return {
+      playerCount: humanCount,
+      waitingCount,
+      status: data.status,
+      isFull,
+      hostName: host ? host.name : null,
+    };
+  },
+
+  joinBeppan(args) {
+    const data = ensurePermanentRoom();
+    const res = joinPermanentRoomData(
+      data,
+      str(args.playerId).slice(0, 64),
+      str(args.name).slice(0, 16) || "プレイヤー",
+      args.avatar,
+      args.rules as Rules | undefined,
+    );
+    if (res.ok) saveRoom(PERMANENT_ROOM_CODE, data);
+    return { ...res, code: PERMANENT_ROOM_CODE };
+  },
+
+  updateRoomRules(args) {
+    const code = str(args.code);
+    const data =
+      code === PERMANENT_ROOM_CODE ? ensurePermanentRoom() : loadRoom(code);
+    if (!data) return { ok: false, reason: "部屋が見つかりません" };
+    if (data.hostId !== str(args.playerId)) {
+      return { ok: false, reason: "ホストだけがルールを変更できます" };
+    }
+    if (data.status !== "lobby") {
+      return { ok: false, reason: "ロビーでのみ変更できます" };
+    }
+    data.rules = normalizeRules(args.rules as Rules);
+    saveRoom(code, data);
+    return { ok: true, reason: "" };
+  },
+
   leaveRoom(args) {
     const code = str(args.code);
+    if (code === PERMANENT_ROOM_CODE) {
+      const data = ensurePermanentRoom();
+      const playerId = str(args.playerId);
+      const beforeWaiting = (data.waiting ?? []).length;
+      data.waiting = (data.waiting ?? []).filter((p) => p.id !== playerId);
+      let changed = data.waiting.length !== beforeWaiting;
+      if (data.status === "lobby" || data.status === "finished") {
+        const before = data.roster.length;
+        data.roster = data.roster.filter((p) => p.id !== playerId);
+        changed = changed || data.roster.length !== before;
+        if (changed) {
+          syncPermanentHost(data);
+          if (data.status === "lobby") resetPermanentIfEmpty(data);
+        }
+      }
+      if (changed) saveRoom(code, data);
+      return { ok: true, reason: "" };
+    }
     const data = loadRoom(code);
     if (!data) return { ok: false, reason: "部屋が見つかりません" };
     if (data.status === "lobby") {
@@ -641,6 +855,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
 
 restoreRooms();
 sweepOldRooms();
+ensurePermanentRoom();
 
 const PORT = Number(process.env.PORT ?? 3000);
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
