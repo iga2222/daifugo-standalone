@@ -62,6 +62,10 @@ export interface RoomView {
   scores: Record<string, number>;
   gameNumber: number;
   matchEnded: boolean;
+  gameHistory: {
+    gameNo: number;
+    entries: { id: string; name: string; finishRank: number; points: number }[];
+  }[];
 }
 
 export interface OkReason {
