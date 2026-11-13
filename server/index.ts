@@ -43,6 +43,12 @@ interface RosterPlayer {
   avatar?: string | null;
 }
 
+/** 1ゲーム分の最終順位の記録（対戦終了画面の「ゲームごとの順位」用）。 */
+interface GameResultRecord {
+  gameNo: number;
+  entries: { id: string; name: string; finishRank: number; points: number }[];
+}
+
 interface RoomData {
   hostId: string;
   status: "lobby" | "playing" | "finished";
@@ -55,6 +61,7 @@ interface RoomData {
   gameNumber: number;
   scored: boolean;
   matchEnded: boolean;
+  gameHistory: GameResultRecord[];
 }
 
 function sanitizeAvatar(v: unknown): string | null {
@@ -107,6 +114,21 @@ function capturePrev(data: RoomData) {
         if (p.finishRank !== null) {
           data.scores[p.id] = (data.scores[p.id] ?? 0) + (total - p.finishRank + 1);
         }
+      }
+      data.gameHistory = data.gameHistory ?? [];
+      if (!data.gameHistory.some((g) => g.gameNo === data.gameNumber)) {
+        data.gameHistory.push({
+          gameNo: data.gameNumber,
+          entries: game.players
+            .filter((p) => p.finishRank !== null)
+            .map((p) => ({
+              id: p.id,
+              name: p.name,
+              finishRank: p.finishRank!,
+              points: total - p.finishRank! + 1,
+            }))
+            .sort((a, b) => a.finishRank - b.finishRank),
+        });
       }
       data.scored = true;
     }
@@ -181,6 +203,7 @@ function loadRoom(code: string): RoomData | null {
   copy.gameNumber = copy.gameNumber ?? 1;
   copy.scored = copy.scored ?? false;
   copy.matchEnded = copy.matchEnded ?? false;
+  copy.gameHistory = Array.isArray(copy.gameHistory) ? copy.gameHistory : [];
   return copy;
 }
 
@@ -275,6 +298,7 @@ function toView(code: string, data: RoomData, playerId: string) {
     scores: data.scores,
     gameNumber: data.gameNumber,
     matchEnded: data.matchEnded,
+    gameHistory: data.gameHistory ?? [],
   };
 }
 
@@ -305,6 +329,7 @@ function emptyView(code: string) {
     scores: {},
     gameNumber: 1,
     matchEnded: false,
+    gameHistory: [],
   };
 }
 
@@ -343,6 +368,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
       gameNumber: 1,
       scored: false,
       matchEnded: false,
+      gameHistory: [],
     };
     saveRoom(code, data);
     return { code };
@@ -406,6 +432,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
     data.gameNumber = 1;
     data.scored = false;
     data.matchEnded = false;
+    data.gameHistory = [];
     data.game = createGame(roster, data.rules, {
       winnerId: data.prevWinnerId,
       ranks: data.prevRanks ?? undefined,
@@ -557,6 +584,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
     data.gameNumber = 1;
     data.scored = false;
     data.matchEnded = false;
+    data.gameHistory = [];
     saveRoom(code, data);
     return { ok: true, reason: "" };
   },
