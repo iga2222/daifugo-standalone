@@ -26,6 +26,8 @@ export interface RoomView {
   rules: Rules;
   players: RoomViewPlayer[];
   myHand: Card[];
+  /** 上がり済みのときだけサーバーが入れる、他のプレイヤーの残り手札。それ以外は空。 */
+  peekHands: Record<string, Card[]>;
   field: { cards: Card[]; ownerId: string } | null;
   currentPlayerId: string | null;
   revolution: boolean;
