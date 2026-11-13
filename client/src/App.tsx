@@ -4029,6 +4029,20 @@ function ChatSheet({
   );
 }
 
+/** 新着チャットを画面上部に短く知らせる帯。タップはブロックしない。 */
+function ChatBanner({ msg }: { msg: ChatMsg }) {
+  return (
+    <div
+      aria-live="polite"
+      className="pointer-events-none fixed inset-x-0 top-[calc(env(safe-area-inset-top,0px)+10px)] z-[75] flex justify-center px-4"
+    >
+      <div className="chat-banner-in max-w-lg truncate rounded-full border-2 border-[#d8b25c] bg-[#07331a]/95 px-4 py-2 text-sm font-extrabold text-[#ffe9a8] shadow-xl">
+        {msg.name}：{msg.text}
+      </div>
+    </div>
+  );
+}
+
 function getPlayerId(): string {
   const key = "daifugo-player-id";
   let id = localStorage.getItem(key);
@@ -4106,6 +4120,14 @@ function OnlineGame({
   const [chatOpen, setChatOpen] = useState(false);
   const [chatDraft, setChatDraft] = useState("");
   const [seenChatId, setSeenChatId] = useState<string | null>(null);
+  // 新着チャットバナー（上部表示・キュー方式）
+  const [chatBanner, setChatBanner] = useState<ChatMsg | null>(null);
+  const chatBannerQueueRef = useRef<ChatMsg[]>([]);
+  const chatBannerActiveRef = useRef(false);
+  const chatBannerTimerRef = useRef(0);
+  const chatSeenIdsRef = useRef<Set<string> | null>(null);
+  const chatOpenRef = useRef(false);
+  chatOpenRef.current = chatOpen;
 
   const room = useQuery({
     queryKey: ["room", code, playerId],
@@ -4132,6 +4154,59 @@ function OnlineGame({
   const unreadChat = chatMessages
     .slice(seenChatIdx + 1)
     .filter((m) => m.playerId !== playerId).length;
+
+  // 新着チャット（他人の発言）を上部バナーのキューへ。初回読み込み分は出さない。
+  useEffect(() => {
+    const seen = chatSeenIdsRef.current;
+    if (!seen) {
+      chatSeenIdsRef.current = new Set(chatMessages.map((m) => m.id));
+      return;
+    }
+    const fresh = chatMessages.filter((m) => !seen.has(m.id));
+    for (const m of chatMessages) seen.add(m.id);
+    if (fresh.length === 0) return;
+    if (chatOpenRef.current) return;
+    for (const m of fresh) {
+      if (m.playerId !== playerId) chatBannerQueueRef.current.push(m);
+    }
+    if (chatBannerQueueRef.current.length === 0) return;
+    if (chatBannerActiveRef.current) return;
+    const showNext = () => {
+      const next = chatBannerQueueRef.current.shift();
+      if (!next) {
+        chatBannerActiveRef.current = false;
+        setChatBanner(null);
+        return;
+      }
+      chatBannerActiveRef.current = true;
+      setChatBanner(next);
+      window.clearTimeout(chatBannerTimerRef.current);
+      chatBannerTimerRef.current = window.setTimeout(showNext, 3500);
+    };
+    showNext();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatMessages]);
+  // チャットを開いたらバナーを止める
+  useEffect(() => {
+    if (!chatOpen) return;
+    window.clearTimeout(chatBannerTimerRef.current);
+    chatBannerQueueRef.current = [];
+    chatBannerActiveRef.current = false;
+    setChatBanner(null);
+  }, [chatOpen]);
+  useEffect(
+    () => () => {
+      window.clearTimeout(chatBannerTimerRef.current);
+    },
+    [],
+  );
+  // 部屋が変わったらバナーの既読管理をリセットする
+  useEffect(() => {
+    chatSeenIdsRef.current = null;
+    chatBannerQueueRef.current = [];
+    chatBannerActiveRef.current = false;
+    setChatBanner(null);
+  }, [code]);
 
   // 端末に保存していた合言葉の部屋が消えていたら（サーバーの再起動などで
   // 消えることがある）、保存だけ先に消しておく。次に開いたときも同じ
@@ -4214,7 +4289,12 @@ function OnlineGame({
   };
 
   const join = async () => {
-    if (joinCode.length !== 4) {
+    const input = joinCode.trim();
+    if (!input) {
+      setError("合言葉を入力してください");
+      return;
+    }
+    if (/^\d+$/.test(input) && input.length !== 4) {
       setError("4桁の合言葉を入力してください");
       return;
     }
@@ -4225,15 +4305,16 @@ function OnlineGame({
       const res = await api.joinRoom({
         playerId,
         name: name.trim() || "プレイヤー",
-        code: joinCode,
+        code: input,
         avatar: sharedAvatar,
       });
       if (!res.ok) {
         setError(res.reason);
         return;
       }
-      localStorage.setItem("daifugo-room", joinCode);
-      setCode(joinCode);
+      const target = res.code || input;
+      localStorage.setItem("daifugo-room", target);
+      setCode(target);
     } catch {
       setError("部屋に入れませんでした。もう一度お試しください");
     } finally {
@@ -4655,9 +4736,8 @@ function OnlineGame({
           </label>
           <input
             id="join-code"
-            inputMode="numeric"
             value={joinCode}
-            onChange={(e) => setJoinCode(e.target.value.replace(/\D/g, "").slice(0, 4))}
+            onChange={(e) => setJoinCode(e.target.value.slice(0, 16))}
             placeholder="例：4821"
             className="w-full rounded-xl bg-[var(--surface2)] border border-[var(--border)] px-4 py-3 text-center text-2xl font-extrabold tracking-[0.4em] text-[var(--text)] placeholder:text-[var(--dim)] placeholder:tracking-normal placeholder:text-base"
           />
@@ -4780,10 +4860,17 @@ function OnlineGame({
           >
             ← 退出
           </button>
-          <p className="text-sm font-extrabold text-[var(--text)]">
-            合言葉{" "}
-            <span className="text-[#ffd34d] text-xl tracking-[0.2em]">{view.code}</span>
-          </p>
+          {view.isPermanent ? (
+            <p className="text-sm font-extrabold text-[var(--text)]">
+              常設ルーム{" "}
+              <span className="text-[#ffd34d] text-xl">別班</span>
+            </p>
+          ) : (
+            <p className="text-sm font-extrabold text-[var(--text)]">
+              合言葉{" "}
+              <span className="text-[#ffd34d] text-xl tracking-[0.2em]">{view.code}</span>
+            </p>
+          )}
           {chatButton}
         </div>
         <div className="px-4 mt-4 space-y-4 max-w-lg mx-auto">
@@ -4813,6 +4900,11 @@ function OnlineGame({
                       ホスト
                     </span>
                   )}
+                  {view.waitingIds.includes(p.id) && (
+                    <span className="text-[11px] font-extrabold bg-white/15 text-white rounded-full px-2 py-0.5">
+                      次のゲームから参加
+                    </span>
+                  )}
                   {p.id === playerId && (
                     <span className="text-[11px] text-[var(--dim)]">あなた</span>
                   )}
@@ -4833,6 +4925,25 @@ function OnlineGame({
             </div>
           </div>
 
+          {view.isPermanent && view.isHost && (
+            <div className="gold-frame rounded-2xl bg-[var(--surface)] p-4">
+              <h3 className="gold-text font-extrabold text-sm mb-2">
+                別班のルール（ホストが変更できます）
+              </h3>
+              <RulesEditor
+                rules={view.rules}
+                onChange={async (r) => {
+                  if (!code) return;
+                  const res = await api.updateRoomRules({ code, playerId, rules: r });
+                  if (!res.ok) setError(res.reason);
+                  else {
+                    setError("");
+                    invalidate();
+                  }
+                }}
+              />
+            </div>
+          )}
           {view.isHost ? (
             <div className="gold-frame rounded-2xl bg-[var(--surface)] p-4 space-y-4">
               <CountPicker
@@ -4862,6 +4973,7 @@ function OnlineGame({
           {error && <p className="text-center text-sm font-bold text-[#ff9d7a]">{error}</p>}
         </div>
         {chatSheet}
+        {chatBanner && !chatOpen && <ChatBanner msg={chatBanner} />}
       </div>
     );
   }
@@ -4990,8 +5102,11 @@ function OnlineGame({
       <div className="flex items-center justify-between px-3">
         <span className="w-[76px]" aria-hidden />
         <p className="text-center text-xs font-bold text-white/85 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
-          合言葉 <span className="text-[#ffe9a8] tracking-[0.25em] text-sm">{view.code}</span>
-          （オンライン対戦中）
+          {view.isPermanent ? (
+            <>別班 <span className="text-[#ffe9a8] text-sm">（常設ルーム・オンライン対戦中）</span></>
+          ) : (
+            <>合言葉 <span className="text-[#ffe9a8] tracking-[0.25em] text-sm">{view.code}</span>（オンライン対戦中）</>
+          )}
         </p>
         {chatButton}
       </div>
@@ -5253,6 +5368,7 @@ function OnlineGame({
       )}
     </GameScreen>
     {chatSheet}
+    {chatBanner && !chatOpen && <ChatBanner msg={chatBanner} />}
     </>
   );
 }
