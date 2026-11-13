@@ -14,6 +14,8 @@ export interface RoomViewPlayer {
   isHost: boolean;
   cardCount: number;
   finishRank: number | null;
+  /** 直前のゲームでの順位（席アイコン右下のバッジ用）。無ければ null。 */
+  prevRank: number | null;
   avatar: string | null;
 }
 
