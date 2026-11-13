@@ -335,6 +335,12 @@
 }
 .deck-pulse { animation: deck-pulse 0.9s ease-in-out infinite; }
 
+/* 低丈の画面では装飾帯を細くして、対局画面の各要素が1画面に収まる
+   余地を増やす（席・場・手札・ボタンが重ならないための調整）。 */
+@media (max-height: 720px) {
+  .ornate-band { height: 8px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .card-pop, .chip-pop, .pile-exit, .turn-ring, .turn-glow, .panel-in, .chat-banner-in, .effect-banner, .finish-banner, .result-row, .deck-pulse, .my-turn-banner, .seat-gather, .seat-settle, .shuffle-banner { animation: none !important; }
   /* 手番の席枠はモーション抑制時も静止した強いグローで示す */
