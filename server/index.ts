@@ -43,6 +43,15 @@ interface RosterPlayer {
   avatar?: string | null;
 }
 
+/** 部屋チャットの1メッセージ。 */
+interface ChatMessage {
+  id: string;
+  playerId: string;
+  name: string;
+  text: string;
+  at: number; // epoch ms
+}
+
 /** 1ゲーム分の最終順位の記録（対戦終了画面の「ゲームごとの順位」用）。 */
 interface GameResultRecord {
   gameNo: number;
@@ -62,6 +71,7 @@ interface RoomData {
   scored: boolean;
   matchEnded: boolean;
   gameHistory: GameResultRecord[];
+  chat: ChatMessage[];
 }
 
 function sanitizeAvatar(v: unknown): string | null {
@@ -204,6 +214,7 @@ function loadRoom(code: string): RoomData | null {
   copy.scored = copy.scored ?? false;
   copy.matchEnded = copy.matchEnded ?? false;
   copy.gameHistory = Array.isArray(copy.gameHistory) ? copy.gameHistory : [];
+  copy.chat = Array.isArray(copy.chat) ? copy.chat : [];
   return copy;
 }
 
@@ -299,6 +310,7 @@ function toView(code: string, data: RoomData, playerId: string) {
     gameNumber: data.gameNumber,
     matchEnded: data.matchEnded,
     gameHistory: data.gameHistory ?? [],
+    chat: data.chat ?? [],
   };
 }
 
@@ -330,6 +342,7 @@ function emptyView(code: string) {
     gameNumber: 1,
     matchEnded: false,
     gameHistory: [],
+    chat: [],
   };
 }
 
@@ -369,6 +382,7 @@ const handlers: Record<string, (args: Args) => unknown> = {
       scored: false,
       matchEnded: false,
       gameHistory: [],
+      chat: [],
     };
     saveRoom(code, data);
     return { code };
@@ -585,6 +599,28 @@ const handlers: Record<string, (args: Args) => unknown> = {
     data.scored = false;
     data.matchEnded = false;
     data.gameHistory = [];
+    saveRoom(code, data);
+    return { ok: true, reason: "" };
+  },
+
+  sendChat(args) {
+    const code = str(args.code);
+    const playerId = str(args.playerId).slice(0, 64);
+    const text = str(args.text).trim().slice(0, 200);
+    const data = loadRoom(code);
+    if (!data) return { ok: false, reason: "部屋が見つかりません" };
+    if (!text) return { ok: false, reason: "メッセージが空です" };
+    const me = data.roster.find((p) => p.id === playerId && !p.isBot);
+    if (!me) return { ok: false, reason: "部屋のメンバーではありません" };
+    data.chat = Array.isArray(data.chat) ? data.chat : [];
+    data.chat.push({
+      id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      playerId,
+      name: me.name,
+      text,
+      at: Date.now(),
+    });
+    if (data.chat.length > 100) data.chat = data.chat.slice(-100);
     saveRoom(code, data);
     return { ok: true, reason: "" };
   },
