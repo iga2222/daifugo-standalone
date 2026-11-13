@@ -921,15 +921,19 @@ const server = Bun.serve({
 
     const pathname = decodeURIComponent(url.pathname);
 
-    // iOS home-screen icons at the classic root paths. Safari looks for
+    // iOS home-screen icons at fixed root paths. Safari looks for
     // /apple-touch-icon.png (and the -precomposed variant) at the site root
     // in addition to the <link> in the HTML; serving the current 180px icon
     // there keeps "Add to Home Screen" from falling back to a stale cached
-    // icon or a page screenshot. Fixed-name copies live in public/; after a
-    // client rebuild wipes them, fall back to the bundled hashed asset.
+    // icon or a page screenshot. The HTML link itself points at
+    // /apple-touch-icon-v2.png — a path no older icon ever used — so caches
+    // keyed to the previous icon URL cannot hand back a stale icon.
+    // Fixed-name copies live in public/; after a client rebuild wipes them,
+    // fall back to the bundled hashed asset.
     if (
       pathname === "/apple-touch-icon.png" ||
-      pathname === "/apple-touch-icon-precomposed.png"
+      pathname === "/apple-touch-icon-precomposed.png" ||
+      pathname === "/apple-touch-icon-v2.png"
     ) {
       const iconHeaders = {
         "content-type": "image/png",
