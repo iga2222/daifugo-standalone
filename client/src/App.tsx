@@ -20,6 +20,8 @@ exchangeDecider,
 isForbiddenFinishPlay,
 legalSets,
 normalizeRules,
+pickAutoSelectSet,
+playKind,
 resolveExchange,
 resolvePending as resolvePendingEngine,
 sequenceInfo,
@@ -3542,6 +3544,30 @@ function LocalGame({
     if (!pending && game.exchange && exRole === "give" && !rules.exchangeChoice)
       return;
     setError("");
+    // 自動選択: 場に2枚以上あり、未選択の出せるカードをタップしたら、その
+    // カードを含む合法手を丸ごと選択する（通常の「出すカード」選択時のみ。
+    // カード交換・7渡し等の選択には適用しない）。選択済みカードのタップは
+    // 従来どおり下の処理で1枚だけ解除する。
+    if (
+      !pending &&
+      !game.exchange &&
+      !selected.includes(id) &&
+      (playableIds?.has(id) ?? false) &&
+      game.field &&
+      playableSets
+    ) {
+      const auto = pickAutoSelectSet(
+        game.field.cards,
+        game.field.kind === "sequence" ? "sequence" : "group",
+        rules,
+        playableSets,
+        id,
+      );
+      if (auto) {
+        setSelected(auto.map((c) => c.id));
+        return;
+      }
+    }
     setSelected((s) => {
       if (s.includes(id)) return s.filter((x) => x !== id);
       // 通常の「出すカード」選択では、金色に光っている（出せる）カードだけ
@@ -3666,7 +3692,7 @@ function LocalGame({
   // 判定はエンジンの合法手と一致させ、禁止あがりになる手は出せない扱い）。
   // ただし発光・減光は、Boardの順次表示が自分の手番まで追いついてから開始する
   // （CPUの手を表示している間は、論理的に自分の番でも光らせない）。
-  const playableIds = useMemo(() => {
+  const playableSets = useMemo(() => {
     if (
       !myTurnHuman ||
       pending ||
@@ -3676,12 +3702,19 @@ function LocalGame({
     ) {
       return null;
     }
-    const sets = legalSets(game, rules, game.current).filter(
+    return legalSets(game, rules, game.current).filter(
       (s) => !isForbiddenFinishPlay(rules, current.hand.length, s),
     );
-    return new Set(sets.flatMap((s) => s.map((c) => c.id)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [game, rules, revealCaughtUp]);
+
+  const playableIds = useMemo(
+    () =>
+      playableSets
+        ? new Set(playableSets.flatMap((s) => s.map((c) => c.id)))
+        : null,
+    [playableSets],
+  );
 
   // 自分の手番の強調: 表示キューが追いつき、配札も終わって、実際に
   // 入力できるようになった瞬間だけを「自分の番」とする（再生途中で先行しない）。
@@ -4831,7 +4864,7 @@ function OnlineGame({
   // （CPUや相手の手を表示している間は、論理的に自分の番でも光らせない）。
   // 注意: この useMemo は早期リターンより前で必ず呼ぶこと。ロビー→対局中への
   // 画面遷移でフックの数が変わると React がツリー全体を落として白画面になる。
-  const playableIdsOnline = useMemo(() => {
+  const playableSetsOnline = useMemo(() => {
     if (
       !view ||
       view.status !== "playing" ||
@@ -4843,12 +4876,19 @@ function OnlineGame({
       return null;
     }
     const st = viewAsState(view, playerId);
-    const sets = legalSets(st, view.rules, st.current).filter(
+    return legalSets(st, view.rules, st.current).filter(
       (s) => !isForbiddenFinishPlay(view.rules, view.myHand.length, s),
     );
-    return new Set(sets.flatMap((s) => s.map((c) => c.id)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, playerId, revealCaughtUp]);
+
+  const playableIdsOnline = useMemo(
+    () =>
+      playableSetsOnline
+        ? new Set(playableSetsOnline.flatMap((s) => s.map((c) => c.id)))
+        : null,
+    [playableSetsOnline],
+  );
 
   // 自分の手番の強調: サーバー側で自分の番になっていても、CPUの手の
   // 再生表示が追いついて実際に入力できるようになるまでは開始しない
@@ -5327,6 +5367,30 @@ function OnlineGame({
     )
       return;
     setError("");
+    // 自動選択（オンライン）: 場に2枚以上あり、未選択の出せるカードを
+    // タップしたら、そのカードを含む合法手を丸ごと選択する（通常の
+    // 「出すカード」選択時のみ）。選択済みカードのタップは従来どおり
+    // 下の処理で1枚だけ解除する。
+    if (
+      !pending &&
+      !view.exchange &&
+      !selected.includes(id) &&
+      (playableIdsOnline?.has(id) ?? false) &&
+      view.field &&
+      playableSetsOnline
+    ) {
+      const auto = pickAutoSelectSet(
+        view.field.cards,
+        playKind(view.rules, view.field.cards) ?? "group",
+        view.rules,
+        playableSetsOnline,
+        id,
+      );
+      if (auto) {
+        setSelected(auto.map((c) => c.id));
+        return;
+      }
+    }
     setSelected((s) => {
       if (s.includes(id)) return s.filter((x) => x !== id);
       // 通常の「出すカード」選択では、金色に光っている（出せる）カードだけ
