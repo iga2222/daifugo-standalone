@@ -4593,10 +4593,19 @@ function ChatSheet({
       vp.removeEventListener("scroll", update);
     };
   }, []);
-  const keyboardOpen = vv !== null && vv.inset > 0;
-  const sheetMaxH = vv
-    ? Math.round(vv.h * (keyboardOpen ? 0.52 : 0.46))
-    : undefined;
+  // 入力欄にフォーカスしていて、見えている画面の高さが大きく縮んだら
+  // 「キーボード表示中」とみなす。この間はシート表示をやめ、キーボードの
+  // 真上に浮く入力バー（入力欄＋送信＋閉じる）だけにする: 背景・タイトル・
+  // 履歴はすべて消え、背後は透明で対局がそのまま見える。入力欄の要素
+  // 自体は常駐させたまま周りの表示だけ切り替える（作り直すとフォーカスが
+  // 外れてキーボードが閉じてしまうため）。
+  const [inputFocused, setInputFocused] = useState(false);
+  const keyboardOpen =
+    inputFocused &&
+    vv !== null &&
+    (vv.inset > 60 || window.innerHeight - vv.h > 120);
+  const sheetMaxH =
+    vv && !keyboardOpen ? Math.round(vv.h * 0.46) : undefined;
   // 送信履歴は localStorage が正本。開くたびに読み直し、自分の送信が
   // 成功して sending が落ちたタイミングでも読み直して最新化する
   // （記録は送信成功時に OnlineRoom 側で行う）。
@@ -4626,18 +4635,24 @@ function ChatSheet({
       <button
         type="button"
         aria-label="チャットを閉じる"
-        className="absolute inset-0 bg-transparent"
+        className={`absolute inset-0 bg-transparent${keyboardOpen ? " pointer-events-none" : ""}`}
         style={{ minHeight: 0 }}
         onClick={onClose}
       />
       <div
-        className="panel-in relative mx-auto flex max-h-[46dvh] w-full max-w-lg flex-col rounded-t-3xl border-t-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
+        className={`panel-in relative mx-auto flex w-full max-w-lg flex-col${
+          keyboardOpen
+            ? " bg-transparent"
+            : " max-h-[46dvh] rounded-t-3xl border-t-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
+        }`}
         style={{
           paddingBottom: "env(safe-area-inset-bottom, 0px)",
           ...(sheetMaxH ? { maxHeight: `${sheetMaxH}px` } : {}),
         }}
       >
-        <div className="flex items-center justify-between px-4 pt-3 pb-1">
+        <div
+          className={`flex items-center justify-between px-4 pt-3 pb-1${keyboardOpen ? " hidden" : ""}`}
+        >
           <p className="font-extrabold text-[#ffe9a8]">チャット</p>
           <button
             type="button"
@@ -4651,7 +4666,7 @@ function ChatSheet({
         </div>
         <div
           ref={listRef}
-          className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-2"
+          className={`min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-2${keyboardOpen ? " hidden" : ""}`}
         >
           {messages.length === 0 ? (
             <p className="py-4 text-center text-sm font-bold text-white/60">
@@ -4683,7 +4698,9 @@ function ChatSheet({
           )}
         </div>
         {history.length > 0 && (
-          <div className="border-t border-white/15 px-3 pt-2 pb-1">
+          <div
+            className={`border-t border-white/15 px-3 pt-2 pb-1${keyboardOpen ? " hidden" : ""}`}
+          >
             <p className="text-[11px] font-bold text-white/55">
               送信履歴（タップで再送信）
             </p>
@@ -4718,7 +4735,9 @@ function ChatSheet({
           </div>
         )}
         <form
-          className="flex gap-2 border-t border-white/15 p-3"
+          className={`flex items-center gap-2 ${
+            keyboardOpen ? "px-3 pt-1 pb-2" : "border-t border-white/15 p-3"
+          }`}
           onSubmit={(e) => {
             e.preventDefault();
             onSend();
@@ -4727,10 +4746,16 @@ function ChatSheet({
           <input
             value={draft}
             onChange={(e) => onDraftChange(e.target.value)}
+            onFocus={() => setInputFocused(true)}
+            onBlur={() => setInputFocused(false)}
             maxLength={200}
             placeholder="メッセージを入力（200文字まで）"
             aria-label="チャットメッセージ"
-            className="min-w-0 flex-1 rounded-xl border border-white/25 bg-black/30 px-3 py-2 font-bold text-white placeholder:text-white/40"
+            className={`min-w-0 flex-1 rounded-xl border px-3 py-2 font-bold text-white placeholder:text-white/40 ${
+              keyboardOpen
+                ? "border-white/50 bg-black/60"
+                : "border-white/25 bg-black/30"
+            }`}
           />
           <button
             type="submit"
@@ -4738,6 +4763,17 @@ function ChatSheet({
             className="btn-orange flex-none rounded-xl px-5 font-extrabold disabled:opacity-40"
           >
             送信
+          </button>
+          {/* キーボード表示中（入力バーだけの形）でも閉じられるよう、
+              バー内に閉じるボタンを置く。通常表示では隠す。 */}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="閉じる"
+            className={`h-10 w-10 flex-none rounded-full border border-white/40 bg-black/50 font-extrabold text-white${keyboardOpen ? "" : " hidden"}`}
+            style={{ minHeight: 0 }}
+          >
+            ×
           </button>
         </form>
       </div>
