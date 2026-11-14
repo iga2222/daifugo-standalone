@@ -4570,7 +4570,8 @@ function removeChatHistory(text: string): string[] {
   return next;
 }
 
-/** 部屋チャットのシート。開いている間も対局は止めない（表示だけの重ね表示）。 */
+/** 部屋チャットのパネル。画面上部に固定され、下へ伸びて開く。
+ * 開いている間も対局は止めない（表示だけの重ね表示）。 */
 function ChatSheet({
   messages,
   playerId,
@@ -4596,22 +4597,16 @@ function ChatSheet({
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
-  // キーボード対応: visualViewport を監視し、シートの高さを「見えている
-  // 画面」の割合で制限する（通常表示でも画面上部に対局が見える余地を
-  // 残す）。キーボード表示中はシート全体をキーボードの上に乗せる
-  // （下端オフセット分だけ持ち上げる）。入力欄は常にシートの中にあり、
-  // 独立して浮くことはない。
-  const [vv, setVv] = useState<{ h: number; inset: number } | null>(null);
+  // パネルは画面上部に固定され、下へ伸びて開く。visualViewport を監視し、
+  // パネルの高さを「見えている画面」の割合で制限する（パネルの下に場が
+  // 見える余地を残す）。キーボード表示中もパネルは上部に留まり、位置は
+  // 変えない（キーボードは画面下部に被さるだけ）。入力欄は常にパネルの
+  // 中にあり、独立して浮くことはない。
+  const [vvH, setVvH] = useState<number | null>(null);
   useEffect(() => {
     const vp = window.visualViewport;
     if (!vp) return;
-    const update = () => {
-      const inset = Math.max(
-        0,
-        window.innerHeight - vp.height - vp.offsetTop,
-      );
-      setVv({ h: vp.height, inset });
-    };
+    const update = () => setVvH(vp.height);
     update();
     vp.addEventListener("resize", update);
     vp.addEventListener("scroll", update);
@@ -4624,11 +4619,9 @@ function ChatSheet({
   // ブラウザ自動スクロール抑制）にだけ使う。入力欄は常にこの1つだけで、
   // シートの中（履歴の下）に置く。
   const [inputFocused, setInputFocused] = useState(false);
-  // シートの高さは「見えている画面」の46%まで。キーボード表示中は
-  // シート全体をキーボードの上に乗せる（下端オフセット分だけ持ち上げる）
-  // だけで、入力欄がシートから独立して浮くことはない。
-  const sheetMaxH = vv ? Math.round(vv.h * 0.46) : undefined;
-  const sheetBottom = vv ? vv.inset : 0;
+  // パネルの高さは「見えている画面」の46%まで。キーボード表示中も
+  // パネルは上部に留まり、キーボードに押し上げられたりはしない。
+  const sheetMaxH = vvH ? Math.round(vvH * 0.46) : undefined;
   // 入力欄をタップした瞬間にブラウザがフォーカス中の入力欄を画面内へ
   // 入れようとしてページ全体を自動スクロールさせる（実機では「画面が
   // 一番上まで飛ぶ」）ことがある。対局画面は元々スクロールしない前提
@@ -4703,11 +4696,11 @@ function ChatSheet({
   };
   return (
     <div
-      className="fixed inset-0 z-[80] flex flex-col justify-end"
+      className="fixed inset-0 z-[80] flex flex-col justify-start"
       role="dialog"
       aria-label="チャット"
     >
-      {/* 背景は暗くしない: シートより上は透明な「タップで閉じる」領域だけにし、
+      {/* 背景は暗くしない: パネルより下は透明な「タップで閉じる」領域だけにし、
           入力中も席・場・手番の発光がそのまま見えるようにする。 */}
       <button
         type="button"
@@ -4717,11 +4710,10 @@ function ChatSheet({
         onClick={onClose}
       />
       <div
-        className="panel-in relative mx-auto flex max-h-[46dvh] w-full max-w-lg flex-col rounded-t-3xl border-t-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
+        className="panel-in-top relative mx-auto flex max-h-[46dvh] w-full max-w-lg flex-col rounded-b-3xl border-b-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
         style={{
-          paddingBottom: "env(safe-area-inset-bottom, 0px)",
+          paddingTop: "env(safe-area-inset-top, 0px)",
           ...(sheetMaxH ? { maxHeight: `${sheetMaxH}px` } : {}),
-          ...(sheetBottom > 0 ? { marginBottom: `${sheetBottom}px` } : {}),
         }}
       >
         <div className="flex items-center justify-between px-4 pt-3 pb-1">
