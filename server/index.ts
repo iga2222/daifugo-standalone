@@ -606,14 +606,16 @@ const handlers: Record<string, (args: Args) => unknown> = {
     }
     data.roster = roster;
     data.waiting = [];
+    // ロビーからの開始は新しい対戦。前の対戦の最終順位（バッジ表示用
+    // prevRanks）は引き継がず、第1ゲームは全席バッジなしで始める。
     data.scores = {};
     data.gameNumber = 1;
     data.scored = false;
     data.matchEnded = false;
     data.gameHistory = [];
+    data.prevRanks = null;
     data.game = createGame(roster, data.rules, {
       winnerId: data.prevWinnerId,
-      ranks: data.prevRanks ?? undefined,
       discardGroups: data.game
         ? discardGroupsFromHistory(data.game)
         : undefined,
@@ -779,6 +781,9 @@ const handlers: Record<string, (args: Args) => unknown> = {
     data.scored = false;
     data.matchEnded = false;
     data.gameHistory = [];
+    // ロビーに戻ったら前の対戦の最終順位は消す（次の新しい対戦の
+    // 第1ゲームに「1つ前の順位」バッジを持ち越さないため）。
+    data.prevRanks = null;
     saveRoom(code, data);
     return { ok: true, reason: "" };
   },
