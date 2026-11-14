@@ -611,7 +611,7 @@ function OpponentSeats({
   return (
     <div
       className="relative mx-1 shrink-0"
-      style={{ height: "clamp(118px, 15.4dvh, 130px)" }}
+      style={{ height: "clamp(118px, calc(var(--svh1, 1dvh) * 15.4), 130px)" }}
     >
       {ordered.map(({ player }, i) => {
         const zone = zones[Math.min(i, zones.length - 1)]!;
@@ -1228,12 +1228,35 @@ function GameScreen({
   // padding (safe-area inset + 16px) keeps the bottom controls clear of
   // the home indicator and any browser chrome in both browser and
   // home-screen (standalone) modes.
+  //
+  // ただしキーボード表示中の vv 縮小には追随しない: vv.height が縮むたび
+  // ここで高さを書き換えると、チャット入力のためにキーボードを開いた
+  // だけで対局画面全体が縮む／せり上がってしまう。本人の希望は「キーボ
+  // ードは前面に被さるだけ。対局画面の大きさは変わらない」なので、入力
+  // 欄にフォーカスがある間の vv 変化はキーボード起因とみなして無視し、
+  // キーボード無し時点の高さで固定する。回転（幅の変化）と、入力中で
+  // ないときのブラウザバーの出入りには従来どおり追随する。確定した
+  // 高さは CSS 変数 --svh1（=高さの1%）でも公開し、子要素の dvh 単位
+  // サイズ（席エリア・対応パネル等）もキーボードで縮まないようにする。
   useEffect(() => {
     const el = rootRef.current;
     const vv = window.visualViewport;
     if (!el || !vv) return;
+    let lastWidth = window.innerWidth;
+    let appliedH = Math.round(vv.height);
     const update = () => {
-      el.style.height = `${Math.round(vv.height)}px`;
+      const ae = document.activeElement;
+      const typing =
+        ae instanceof HTMLInputElement || ae instanceof HTMLTextAreaElement;
+      const widthChanged = window.innerWidth !== lastWidth;
+      const h = Math.round(vv.height);
+      // 入力中・幅不変・縮小方向の変化はキーボード起因として無視する。
+      // 拡大方向（キーボードを閉じた／バーが隠れた）は常時受け入れる。
+      if (typing && !widthChanged && h < appliedH) return;
+      lastWidth = window.innerWidth;
+      appliedH = h;
+      el.style.height = `${h}px`;
+      el.style.setProperty("--svh1", `${h / 100}px`);
     };
     update();
     vv.addEventListener("resize", update);
@@ -2666,7 +2689,10 @@ function PendingPanel({
   exact?: boolean;
 }) {
   return (
-    <div className="gold-frame panel-in mx-3 mb-1.5 rounded-2xl bg-[#07331a]/95 p-2.5 shadow-xl relative z-30 shrink-0 max-h-[38dvh] overflow-y-auto">
+    <div
+      className="gold-frame panel-in mx-3 mb-1.5 rounded-2xl bg-[#07331a]/95 p-2.5 shadow-xl relative z-30 shrink-0 overflow-y-auto"
+      style={{ maxHeight: "calc(var(--svh1, 1dvh) * 38)" }}
+    >
       <p className="font-extrabold text-[#ffe9a8]">
         {PENDING_LABEL[pending.type]}
         {isMine ? "：あなたの番です" : `：${actorName}さんが対応中…`}
