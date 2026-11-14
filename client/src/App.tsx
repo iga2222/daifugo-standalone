@@ -4632,6 +4632,64 @@ function ChatSheet({
     (vv.inset > 60 || window.innerHeight - vv.h > 120);
   const sheetMaxH =
     vv && !keyboardOpen ? Math.round(vv.h * 0.46) : undefined;
+  // 入力欄をタップした瞬間にブラウザがフォーカス中の入力欄を画面内へ
+  // 入れようとしてページ全体を自動スクロールさせる（実機では「画面が
+  // 一番上まで飛ぶ」）ことがある。対局画面は元々スクロールしない前提
+  // なので、フォーカス直前のスクロール位置を控え、フォーカス中は
+  // visualViewport／window のスクロールが起きるたびにその位置へ戻し
+  // 続ける（キーボードのアニメーションが落ち着くまで rAF でも張り直す）。
+  const scrollPinRef = useRef<{ x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (!inputFocused) {
+      scrollPinRef.current = null;
+      return;
+    }
+    if (!scrollPinRef.current) {
+      scrollPinRef.current = { x: window.scrollX, y: window.scrollY };
+    }
+    const pin = scrollPinRef.current;
+    const restore = () => {
+      if (window.scrollX !== pin.x || window.scrollY !== pin.y) {
+        window.scrollTo(pin.x, pin.y);
+      }
+    };
+    restore();
+    let raf = 0;
+    let stopped = false;
+    const startedAt = performance.now();
+    const loop = () => {
+      if (stopped) return;
+      restore();
+      if (performance.now() - startedAt < 900) {
+        raf = requestAnimationFrame(loop);
+      }
+    };
+    raf = requestAnimationFrame(loop);
+    const vp = window.visualViewport;
+    vp?.addEventListener("scroll", restore);
+    vp?.addEventListener("resize", restore);
+    window.addEventListener("scroll", restore, { passive: true });
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(raf);
+      vp?.removeEventListener("scroll", restore);
+      vp?.removeEventListener("resize", restore);
+      window.removeEventListener("scroll", restore);
+    };
+  }, [inputFocused]);
+  // 送信は pointerdown（タップの押し始め）で確定させる。click まで待つと、
+  // 先にフォーカスが外れてシートが通常表示へ戻る再描画が走り、ボタンが
+  // 動いてタップが打ち消される（実機報告：浮いているバーの送信が1回で
+  // 効かず、キーボードが閉じた後の元の入力欄でもう一度押す必要があった）。
+  // preventDefault でフォーカスも維持し、click が続けて発火した場合は
+  // ガードで二重送信を防ぐ。
+  const sendGuardRef = useRef(0);
+  const commitSend = () => {
+    const now = Date.now();
+    if (now - sendGuardRef.current < 800) return;
+    sendGuardRef.current = now;
+    onSend();
+  };
   // 送信履歴は localStorage が正本。開くたびに読み直し、自分の送信が
   // 成功して sending が落ちたタイミングでも読み直して最新化する
   // （記録は送信成功時に OnlineRoom 側で行う）。
@@ -4766,12 +4824,21 @@ function ChatSheet({
           }`}
           onSubmit={(e) => {
             e.preventDefault();
-            onSend();
+            commitSend();
           }}
         >
           <input
             value={draft}
             onChange={(e) => onDraftChange(e.target.value)}
+            onPointerDown={() => {
+              // ブラウザの自動スクロールが始まる前に現在位置を控える
+              if (!scrollPinRef.current) {
+                scrollPinRef.current = {
+                  x: window.scrollX,
+                  y: window.scrollY,
+                };
+              }
+            }}
             onFocus={() => setInputFocused(true)}
             onBlur={() => setInputFocused(false)}
             maxLength={200}
@@ -4784,7 +4851,13 @@ function ChatSheet({
             }`}
           />
           <button
-            type="submit"
+            type="button"
+            onPointerDown={(e) => {
+              // フォーカス外れでタップが打ち消されないよう押し始めで送信を確定する
+              e.preventDefault();
+              commitSend();
+            }}
+            onClick={commitSend}
             disabled={!draft.trim() || sending}
             className="btn-orange flex-none rounded-xl px-5 font-extrabold disabled:opacity-40"
           >
@@ -4794,6 +4867,12 @@ function ChatSheet({
               バー内に閉じるボタンを置く。通常表示では隠す。 */}
           <button
             type="button"
+            onPointerDown={(e) => {
+              // 送信ボタンと同じく、フォーカス外れの再描画でタップが
+              // 打ち消されないよう押し始めで閉じる（click の重複は無害）
+              e.preventDefault();
+              onClose();
+            }}
             onClick={onClose}
             aria-label="閉じる"
             className={`h-10 w-10 flex-none rounded-full border border-white/40 bg-black/50 font-extrabold text-white${keyboardOpen ? "" : " hidden"}`}
