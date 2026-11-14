@@ -4596,10 +4596,11 @@ function ChatSheet({
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
-  // キーボード対応: visualViewport を監視し、キーボード表示中は入力
-  // フォームを場付近に浮かせる位置（floatBarBottom）を決める。シートの
-  // 高さは「見えている画面」の割合で制限するので、通常表示でも画面上部に
-  // 対局（席・場・手番の発光）が見える余地が残る。
+  // キーボード対応: visualViewport を監視し、シートの高さを「見えている
+  // 画面」の割合で制限する（通常表示でも画面上部に対局が見える余地を
+  // 残す）。キーボード表示中はシート全体をキーボードの上に乗せる
+  // （下端オフセット分だけ持ち上げる）。入力欄は常にシートの中にあり、
+  // 独立して浮くことはない。
   const [vv, setVv] = useState<{ h: number; inset: number } | null>(null);
   useEffect(() => {
     const vp = window.visualViewport;
@@ -4619,25 +4620,15 @@ function ChatSheet({
       vp.removeEventListener("scroll", update);
     };
   }, []);
-  // 入力欄にフォーカスしていて、見えている画面の高さが大きく縮んだら
-  // 「キーボード表示中」とみなす。この間はシート表示をやめ、入力フォーム
-  // だけをシートの流れから切り離して、場の下寄り〜画面中央付近に半透明の
-  // バーとして独立に浮かせる（入力欄＋送信＋閉じる）: 背景・タイトル・
-  // 履歴はすべて消え、バーの向こうに場のカードがうっすら透ける。入力欄の
-  // 要素自体は常駐させたまま配置だけ切り替える（作り直すとフォーカスが
-  // 外れてキーボードが閉じてしまうため）し、入力欄は常にこの1つだけ。
+  // 入力欄のフォーカス状態は、後述のスクロール固定（フォーカス時の
+  // ブラウザ自動スクロール抑制）にだけ使う。入力欄は常にこの1つだけで、
+  // シートの中（履歴の下）に置く。
   const [inputFocused, setInputFocused] = useState(false);
-  const keyboardOpen =
-    inputFocused &&
-    vv !== null &&
-    (vv.inset > 60 || window.innerHeight - vv.h > 120);
-  const sheetMaxH =
-    vv && !keyboardOpen ? Math.round(vv.h * 0.46) : undefined;
-  // 浮動バーの下端位置（レイアウト座標の下から）: キーボードの上端から、
-  // 見えている高さの約16%分だけ上に置く。対局画面の場の下寄り〜画面
-  // 中央付近に重なる位置で、シートのせり上がりとは独立に決まる。
-  const floatBarBottom =
-    vv && keyboardOpen ? vv.inset + Math.round(vv.h * 0.16) : undefined;
+  // シートの高さは「見えている画面」の46%まで。キーボード表示中は
+  // シート全体をキーボードの上に乗せる（下端オフセット分だけ持ち上げる）
+  // だけで、入力欄がシートから独立して浮くことはない。
+  const sheetMaxH = vv ? Math.round(vv.h * 0.46) : undefined;
+  const sheetBottom = vv ? vv.inset : 0;
   // 入力欄をタップした瞬間にブラウザがフォーカス中の入力欄を画面内へ
   // 入れようとしてページ全体を自動スクロールさせる（実機では「画面が
   // 一番上まで飛ぶ」）ことがある。対局画面は元々スクロールしない前提
@@ -4684,11 +4675,10 @@ function ChatSheet({
     };
   }, [inputFocused]);
   // 送信は pointerdown（タップの押し始め）で確定させる。click まで待つと、
-  // 先にフォーカスが外れてシートが通常表示へ戻る再描画が走り、ボタンが
-  // 動いてタップが打ち消される（実機報告：浮いているバーの送信が1回で
-  // 効かず、キーボードが閉じた後の元の入力欄でもう一度押す必要があった）。
-  // preventDefault でフォーカスも維持し、click が続けて発火した場合は
-  // ガードで二重送信を防ぐ。
+  // 先にフォーカスが外れて再描画が走り、ボタンが動いてタップが打ち消
+  // されることがある（実機報告：送信が1回で効かず、もう一度押す必要が
+  // あった）。preventDefault でフォーカスも維持し、click が続けて発火
+  // した場合はガードで二重送信を防ぐ。
   const sendGuardRef = useRef(0);
   const commitSend = () => {
     const now = Date.now();
@@ -4722,24 +4712,19 @@ function ChatSheet({
       <button
         type="button"
         aria-label="チャットを閉じる"
-        className={`absolute inset-0 bg-transparent${keyboardOpen ? " pointer-events-none" : ""}`}
+        className="absolute inset-0 bg-transparent"
         style={{ minHeight: 0 }}
         onClick={onClose}
       />
       <div
-        className={`relative mx-auto flex w-full max-w-lg flex-col${
-          keyboardOpen
-            ? " pointer-events-none bg-transparent"
-            : " panel-in max-h-[46dvh] rounded-t-3xl border-t-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
-        }`}
+        className="panel-in relative mx-auto flex max-h-[46dvh] w-full max-w-lg flex-col rounded-t-3xl border-t-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
         style={{
           paddingBottom: "env(safe-area-inset-bottom, 0px)",
           ...(sheetMaxH ? { maxHeight: `${sheetMaxH}px` } : {}),
+          ...(sheetBottom > 0 ? { marginBottom: `${sheetBottom}px` } : {}),
         }}
       >
-        <div
-          className={`flex items-center justify-between px-4 pt-3 pb-1${keyboardOpen ? " hidden" : ""}`}
-        >
+        <div className="flex items-center justify-between px-4 pt-3 pb-1">
           <p className="font-extrabold text-[#ffe9a8]">チャット</p>
           <button
             type="button"
@@ -4753,7 +4738,7 @@ function ChatSheet({
         </div>
         <div
           ref={listRef}
-          className={`min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-2${keyboardOpen ? " hidden" : ""}`}
+          className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-2"
         >
           {messages.length === 0 ? (
             <p className="py-4 text-center text-sm font-bold text-white/60">
@@ -4785,9 +4770,7 @@ function ChatSheet({
           )}
         </div>
         {history.length > 0 && (
-          <div
-            className={`border-t border-white/15 px-3 pt-2 pb-1${keyboardOpen ? " hidden" : ""}`}
-          >
+          <div className="border-t border-white/15 px-3 pt-2 pb-1">
             <p className="text-[11px] font-bold text-white/55">
               送信履歴（タップで再送信）
             </p>
@@ -4822,16 +4805,7 @@ function ChatSheet({
           </div>
         )}
         <form
-          className={`flex items-center gap-2 ${
-            keyboardOpen
-              ? "pointer-events-auto fixed left-1/2 w-[calc(100%-1.5rem)] max-w-lg -translate-x-1/2 rounded-2xl border border-white/35 bg-[#04170f]/85 px-3 py-2 shadow-2xl"
-              : "border-t border-white/15 p-3"
-          }`}
-          style={
-            floatBarBottom !== undefined
-              ? { bottom: `${floatBarBottom}px` }
-              : undefined
-          }
+          className="flex items-center gap-2 border-t border-white/15 p-3"
           onSubmit={(e) => {
             e.preventDefault();
             commitSend();
@@ -4854,11 +4828,7 @@ function ChatSheet({
             maxLength={200}
             placeholder="メッセージを入力（200文字まで）"
             aria-label="チャットメッセージ"
-            className={`min-w-0 flex-1 rounded-xl border px-3 py-2 font-bold text-white placeholder:text-white/40 ${
-              keyboardOpen
-                ? "border-white/50 bg-black/60"
-                : "border-white/25 bg-black/30"
-            }`}
+            className="min-w-0 flex-1 rounded-xl border border-white/25 bg-black/30 px-3 py-2 font-bold text-white placeholder:text-white/40"
           />
           <button
             type="button"
@@ -4872,23 +4842,6 @@ function ChatSheet({
             className="btn-orange flex-none rounded-xl px-5 font-extrabold disabled:opacity-40"
           >
             送信
-          </button>
-          {/* キーボード表示中（入力バーだけの形）でも閉じられるよう、
-              バー内に閉じるボタンを置く。通常表示では隠す。 */}
-          <button
-            type="button"
-            onPointerDown={(e) => {
-              // 送信ボタンと同じく、フォーカス外れの再描画でタップが
-              // 打ち消されないよう押し始めで閉じる（click の重複は無害）
-              e.preventDefault();
-              onClose();
-            }}
-            onClick={onClose}
-            aria-label="閉じる"
-            className={`h-10 w-10 flex-none rounded-full border border-white/40 bg-black/50 font-extrabold text-white${keyboardOpen ? "" : " hidden"}`}
-            style={{ minHeight: 0 }}
-          >
-            ×
           </button>
         </form>
       </div>
