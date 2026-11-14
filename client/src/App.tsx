@@ -788,18 +788,19 @@ function FieldPile({
   const segment = disp.slice(segStart);
   const plays = segment.filter((h) => h.cards && h.cards.length > 0);
   const sideEntries = segment.filter((h) => !h.cards || h.cards.length === 0);
-  // Every play this round stays in the pile; the offsets and card size
-  // shrink automatically as the pile grows so it always fits the center.
+  // Every play this round stays in the pile. The cards themselves always
+  // keep the standard field size (see stackMetrics): the pile is fitted
+  // into the center by compressing the overlap offsets only, never by
+  // shrinking the cards.
   const shown = plays;
-  const inPlayOverlap = 26; // px hidden between cards of the same play
+  const baseOverlap = 26; // px hidden between cards of the same play (standard)
   const topPlay = shown[shown.length - 1];
   const topKey = topPlay
     ? `${topPlay.playerId}:${topPlay.cards!.map((c) => c.id).join(",")}`
     : null;
 
-  // 場エリアの実寸を測る。山のカード寸法はこの実寸に合わせて決める:
-  // 以前は dvh 基準の固定寸法だったため、ブラウザのツールバー等で実際の
-  // 表示領域が dvh より狭いと、山がエリアの上下にはみ出して切れていた。
+  // 場エリアの実寸を測る。山がエリアに収まるかの判定にだけ使う
+  // （カード寸法は実寸・枚数では変えない：下の stackMetrics 参照）。
   const rootRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
   useEffect(() => {
@@ -815,64 +816,74 @@ function FieldPile({
   const stackMetrics = (list: HistoryView[]) => {
     const n = list.length;
     const maxCount = list.reduce((m, h) => Math.max(m, h.cards?.length ?? 0), 0);
+    const across = Math.max(1, maxCount);
+    // 場カードの標準サイズ（自動縮小対策を入れる前の寸法）。枚数が増えても
+    // ここは変えない：本人の意図は「自席を小さくして場を広げる」ことで、
+    // 場のカードを小さくすることではないため。
+    const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+    const stdW = Math.min(62, Math.max(40, vh * 0.082));
+    const stdH = Math.min(90, Math.max(56, vh * 0.115));
+    let cw = stdW;
+    let ch = stdH;
+    // 余裕があるときのずらし量（従来どおり広がり全体は抑える）。
     let stepX =
       n > 1 ? Math.max(3, Math.min(10, Math.floor(44 / (n - 1)))) : 0;
     let stepY =
       n > 1 ? Math.max(3, Math.min(13, Math.floor(56 / (n - 1)))) : 0;
-    const scale = n > 7 ? 0.8 : n > 4 ? 0.9 : 1;
-    // 基準寸法は従来どおり（画面高さ基準）。実寸が取れている場合は、
-    // 山全体がエリア内に必ず収まるよう、ずらし量→カード寸法の順に詰める。
-    const vh = typeof window !== "undefined" ? window.innerHeight : 800;
-    let cw = Math.min(62, Math.max(40, vh * 0.082)) * scale;
-    let ch = Math.min(90, Math.max(56, vh * 0.115)) * scale;
+    let overlap = baseOverlap;
     if (box.w > 0 && box.h > 0) {
       // 状態チップ行・「○○さんが出しました」・サイドチップの占有分を
-      // 差し引いた残りが、山に使える高さ。
-      const reserveH = 26 + 24 + (sideEntries.length > 0 ? 22 : 0) + 8;
-      const availH = Math.max(64, box.h - reserveH);
-      const availW = Math.max(120, box.w - 24);
-      if (ch + (n - 1) * stepY > availH) {
-        if (n > 1) stepY = Math.max(2, Math.floor((availH - 40) / (n - 1)));
-        const over = ch + (n - 1) * stepY - availH;
-        if (over > 0) {
-          ch = Math.max(34, ch - over);
-          cw = ch / 1.45;
-        }
+      // 差し引いた残りが、山に使える広さ。
+      const reserveH = 22 + 22 + (sideEntries.length > 0 ? 20 : 0) + 6;
+      const availH = Math.max(48, box.h - reserveH);
+      const availW = Math.max(96, box.w - 24);
+      // 収める調整は、ずらし量の圧縮だけで行う（カード寸法は触らない）。
+      // 縦：手と手のずらしを、標準サイズのまま収まるまで詰める。
+      if (n > 1) {
+        stepY = Math.max(
+          0,
+          Math.min(stepY, Math.floor((availH - ch) / (n - 1))),
+        );
       }
-      const widthOf = (w2: number) =>
-        w2 * Math.max(1, maxCount) -
-        Math.max(0, maxCount - 1) * inPlayOverlap +
-        Math.max(0, n - 1) * stepX;
-      if (widthOf(cw) > availW) {
-        if (n > 1) {
-          stepX = Math.max(
-            2,
-            Math.floor(
-              (availW -
-                cw * Math.max(1, maxCount) +
-                Math.max(0, maxCount - 1) * inPlayOverlap) /
-                (n - 1),
-            ),
-          );
-        }
-        if (widthOf(cw) > availW) {
-          cw = Math.max(
-            26,
-            (availW -
-              Math.max(0, n - 1) * stepX +
-              Math.max(0, maxCount - 1) * inPlayOverlap) /
-              Math.max(1, maxCount),
-          );
-          ch = Math.min(ch, cw * 1.45);
+      // 横：まず手と手のずらしを詰め、それでも幅が余る場合は同じ手の
+      // カード同士の重なりを深くする（左上の数字・スートが見える最低
+      // 16px は必ず残す）。
+      const playW = () =>
+        cw * across - Math.max(0, maxCount - 1) * overlap;
+      if (n > 1) {
+        stepX = Math.max(
+          0,
+          Math.min(stepX, Math.floor((availW - playW()) / (n - 1))),
+        );
+      }
+      if (playW() + Math.max(0, n - 1) * stepX > availW && maxCount > 1) {
+        const need = Math.ceil(
+          (cw * across + Math.max(0, n - 1) * stepX - availW) /
+            (maxCount - 1),
+        );
+        overlap = Math.min(cw - 16, Math.max(overlap, need));
+      }
+      // 最終手段：ずらしを限界まで詰めても標準サイズでは物理的に入らない
+      // 極端な場合（1枚の高さ自体がエリアを超える等）だけ、切れて見えなく
+      // なるのを避けるため必要最小限の縮小を許す。通常の6人戦の長い
+      // トリックでは、上の圧縮だけで標準サイズのまま収まる。
+      const pileW0 = playW() + Math.max(0, n - 1) * stepX;
+      const pileH0 = ch + Math.max(0, n - 1) * stepY;
+      if (pileW0 > availW || pileH0 > availH) {
+        const s = Math.max(
+          0.7,
+          Math.min(availW / Math.max(1, pileW0), availH / Math.max(1, pileH0)),
+        );
+        if (s < 1) {
+          cw = stdW * s;
+          ch = stdH * s;
         }
       }
     }
     const pileW =
-      cw * Math.max(1, maxCount) -
-      Math.max(0, maxCount - 1) * inPlayOverlap +
-      Math.max(0, n - 1) * stepX;
+      cw * across - Math.max(0, maxCount - 1) * overlap + Math.max(0, n - 1) * stepX;
     const pileH = ch + Math.max(0, n - 1) * stepY;
-    return { stepX, stepY, cardW: cw, cardH: ch, pileW, pileH };
+    return { stepX, stepY, overlap, cardW: cw, cardH: ch, pileW, pileH };
   };
   const metrics = stackMetrics(shown);
   const { cardW, cardH } = metrics;
@@ -1022,7 +1033,7 @@ function FieldPile({
               )}
               <span className="flex" data-top-cards={isTop ? true : undefined}>
                 {h.cards!.map((c, j) => (
-                  <span key={c.id} style={{ marginLeft: j === 0 ? 0 : -inPlayOverlap }}>
+                  <span key={c.id} style={{ marginLeft: j === 0 ? 0 : -m.overlap }}>
                     <PlayingCardView
                       card={c}
                       size="pile"
@@ -1089,7 +1100,27 @@ function FieldPile({
       ) : fieldCards && fieldCards.length > 0 ? (
         <div className="card-pop flex justify-center mt-1">
           {fieldCards.map((c, i) => (
-            <div key={c.id} style={{ marginLeft: i === 0 ? 0 : -22 }}>
+            <div
+              key={c.id}
+              style={{
+                marginLeft:
+                  i === 0
+                    ? 0
+                    : -Math.min(
+                        cardW - 16,
+                        Math.max(
+                          22,
+                          box.w > 0 && fieldCards.length > 1
+                            ? Math.ceil(
+                                (cardW * fieldCards.length -
+                                  Math.max(96, box.w - 24)) /
+                                  (fieldCards.length - 1),
+                              )
+                            : 22,
+                        ),
+                      ),
+              }}
+            >
               <PlayingCardView card={c} size="pile" style={{ width: cardW, height: cardH }} />
             </div>
           ))}
@@ -1129,7 +1160,7 @@ function FieldPile({
         >
           <span className="flex">
             {flight.cards.map((c, j) => (
-              <span key={c.id} style={{ marginLeft: j === 0 ? 0 : -inPlayOverlap }}>
+              <span key={c.id} style={{ marginLeft: j === 0 ? 0 : -metrics.overlap }}>
                 <PlayingCardView
                   card={c}
                   size="pile"
