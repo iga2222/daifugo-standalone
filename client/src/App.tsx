@@ -423,18 +423,18 @@ function SeatFrame({
         ))}
       </div>
       <div
-        className={`wood-frame relative z-10 ${large ? "w-[88px]" : "w-[66px]"} ${
+        className={`wood-frame relative z-10 ${large ? "w-[68px]" : "w-[66px]"} ${
           glow ? "turn-glow" : isTurn ? "turn-ring" : ""
         }`}
       >
         <div className={`wood-plate px-1 py-0.5 text-center ${glow ? "turn-plate" : ""}`}>
-          <span className={`block truncate font-bold ${large ? "text-[13px]" : "text-[10px]"}`}>
+          <span className={`block truncate font-bold ${large ? "text-[11px]" : "text-[10px]"}`}>
             {player.name}
           </span>
         </div>
         <div
           className={`relative m-1 rounded-md flex items-center justify-center ${
-            large ? "h-[54px]" : "h-[34px]"
+            large ? "h-[36px]" : "h-[34px]"
           }`}
           style={{ background: avatarGradient(player.id + player.name) }}
         >
@@ -483,7 +483,7 @@ function SeatFrame({
           {!player.avatar && (
             <span
               className={`font-extrabold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)] ${
-                large ? "text-2xl" : "text-lg"
+                large ? "text-xl" : "text-lg"
               }`}
             >
               {player.name.slice(0, 1)}
@@ -491,9 +491,7 @@ function SeatFrame({
           )}
           {player.prevRank != null && (
             <span
-              className={`seat-badge absolute -bottom-1.5 -right-1.5 rounded-full flex items-center justify-center font-extrabold ${
-                large ? "w-6 h-6 text-xs" : "w-5 h-5 text-[11px]"
-              }`}
+              className="seat-badge absolute -bottom-1.5 -right-1.5 rounded-full flex items-center justify-center font-extrabold w-5 h-5 text-[11px]"
               title={`前のゲームは${player.prevRank}位`}
             >
               {player.prevRank}
@@ -502,7 +500,7 @@ function SeatFrame({
         </div>
       </div>
       <p
-        className={`count-label relative z-10 mt-0.5 whitespace-nowrap ${large ? "text-sm" : "text-xs"}`}
+        className="count-label relative z-10 mt-0.5 whitespace-nowrap text-xs"
         style={
           player.finishRank === null && player.cardCount > 0 && player.cardCount <= 3
             ? { color: "#ffd34d", transform: "scale(1.18)" }
@@ -799,24 +797,88 @@ function FieldPile({
     ? `${topPlay.playerId}:${topPlay.cards!.map((c) => c.id).join(",")}`
     : null;
 
+  // 場エリアの実寸を測る。山のカード寸法はこの実寸に合わせて決める:
+  // 以前は dvh 基準の固定寸法だったため、ブラウザのツールバー等で実際の
+  // 表示領域が dvh より狭いと、山がエリアの上下にはみ出して切れていた。
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const update = () => setBox({ w: el.clientWidth, h: el.clientHeight });
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   const stackMetrics = (list: HistoryView[]) => {
     const n = list.length;
-    const stepX = n > 1 ? Math.max(3, Math.min(10, Math.floor(44 / (n - 1)))) : 0;
-    const stepY = n > 1 ? Math.max(3, Math.min(13, Math.floor(56 / (n - 1)))) : 0;
-    const scale = n > 7 ? 0.8 : n > 4 ? 0.9 : 1;
-    const cw = `calc(clamp(40px, 8.2dvh, 62px) * ${scale})`;
-    const ch = `calc(clamp(56px, 11.5dvh, 90px) * ${scale})`;
     const maxCount = list.reduce((m, h) => Math.max(m, h.cards?.length ?? 0), 0);
-    const w = `calc(${cw} * ${Math.max(1, maxCount)} - ${Math.max(0, maxCount - 1) * inPlayOverlap}px + ${Math.max(0, n - 1) * stepX}px)`;
-    const hgt = `calc(${ch} + ${Math.max(0, n - 1) * stepY}px)`;
-    return { stepX, stepY, cardW: cw, cardH: ch, pileW: w, pileH: hgt };
+    let stepX =
+      n > 1 ? Math.max(3, Math.min(10, Math.floor(44 / (n - 1)))) : 0;
+    let stepY =
+      n > 1 ? Math.max(3, Math.min(13, Math.floor(56 / (n - 1)))) : 0;
+    const scale = n > 7 ? 0.8 : n > 4 ? 0.9 : 1;
+    // 基準寸法は従来どおり（画面高さ基準）。実寸が取れている場合は、
+    // 山全体がエリア内に必ず収まるよう、ずらし量→カード寸法の順に詰める。
+    const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+    let cw = Math.min(62, Math.max(40, vh * 0.082)) * scale;
+    let ch = Math.min(90, Math.max(56, vh * 0.115)) * scale;
+    if (box.w > 0 && box.h > 0) {
+      // 状態チップ行・「○○さんが出しました」・サイドチップの占有分を
+      // 差し引いた残りが、山に使える高さ。
+      const reserveH = 26 + 24 + (sideEntries.length > 0 ? 22 : 0) + 8;
+      const availH = Math.max(64, box.h - reserveH);
+      const availW = Math.max(120, box.w - 24);
+      if (ch + (n - 1) * stepY > availH) {
+        if (n > 1) stepY = Math.max(2, Math.floor((availH - 40) / (n - 1)));
+        const over = ch + (n - 1) * stepY - availH;
+        if (over > 0) {
+          ch = Math.max(34, ch - over);
+          cw = ch / 1.45;
+        }
+      }
+      const widthOf = (w2: number) =>
+        w2 * Math.max(1, maxCount) -
+        Math.max(0, maxCount - 1) * inPlayOverlap +
+        Math.max(0, n - 1) * stepX;
+      if (widthOf(cw) > availW) {
+        if (n > 1) {
+          stepX = Math.max(
+            2,
+            Math.floor(
+              (availW -
+                cw * Math.max(1, maxCount) +
+                Math.max(0, maxCount - 1) * inPlayOverlap) /
+                (n - 1),
+            ),
+          );
+        }
+        if (widthOf(cw) > availW) {
+          cw = Math.max(
+            26,
+            (availW -
+              Math.max(0, n - 1) * stepX +
+              Math.max(0, maxCount - 1) * inPlayOverlap) /
+              Math.max(1, maxCount),
+          );
+          ch = Math.min(ch, cw * 1.45);
+        }
+      }
+    }
+    const pileW =
+      cw * Math.max(1, maxCount) -
+      Math.max(0, maxCount - 1) * inPlayOverlap +
+      Math.max(0, n - 1) * stepX;
+    const pileH = ch + Math.max(0, n - 1) * stepY;
+    return { stepX, stepY, cardW: cw, cardH: ch, pileW, pileH };
   };
   const metrics = stackMetrics(shown);
   const { cardW, cardH } = metrics;
 
   // --- play animation: new cards fly from the player's seat (or the viewer's
   // hand) into the pile; when the field flows, the old pile exits. ---
-  const rootRef = useRef<HTMLDivElement>(null);
   const [flight, setFlight] = useState<FlightState | null>(null);
   const prevTopKeyRef = useRef<string | null>(topKey);
   const flightTimer = useRef(0);
@@ -1245,6 +1307,9 @@ interface FxBanner {
   avatar?: string | null;
   /** 重複排除キー（称号が同じ平民どうしでも1人ずつ表示するため）。 */
   dedupeKey?: string;
+  /** あがり演出用: バナー投入時点で、上がりの手から表示が何手進んでいたか。
+   * 大きいほど「古い上がり」なので表示時間を短くする。 */
+  lagPlays?: number;
 }
 
 const BANNER_TONE: Record<FxBanner["tone"], string> = {
@@ -1461,7 +1526,12 @@ function Board({
       const next = [...cur, entry];
       dispRef.current = next;
       setDisp(next);
-      stepTimer.current = window.setTimeout(step, STEP_MS);
+      // 追いつき再生が大きく遅れているとき（対局終了後の一括到着など）は
+      // 歩調を速める。遅れが残ると、ログで先に結果が見えているのに
+      // あがり演出だけが何秒も後から出る状態になるため。
+      const remain = target.length - next.length;
+      const delay = remain >= 8 ? 300 : remain >= 4 ? 430 : STEP_MS;
+      stepTimer.current = window.setTimeout(step, delay);
     };
     if (initialDelay > 0) {
       stepTimer.current = window.setTimeout(step, initialDelay);
@@ -1580,6 +1650,10 @@ function Board({
   const bannerRef = useRef<FxBanner | null>(null);
   const [banner, setBanner] = useState<FxBanner | null>(null);
   const [bannerSeq, setBannerSeq] = useState(0);
+  // 表示中のバナーの表示時間（ms）。バナーが溜まっているときは短くなる
+  // （durForBanner）。CSSアニメーションの再生時間もこれに合わせる。
+  const bannerDurRef = useRef(1500);
+  const [bannerDur, setBannerDur] = useState(1500);
   // 順次表示を止める条件: あがり演出が「表示中」の間だけでなく、キューで
   // 「表示待ち」の間も止める。待ちの間に次の手が表示されてしまうと、
   // バナーが上がりの手の直後に出たことにならないため。
@@ -1588,15 +1662,58 @@ function Board({
       bannerRef.current?.kind === "finish" ||
       queueRef.current.some((b) => b.kind === "finish");
   };
+  // バナー1つの表示時間。固定時間だと、終盤に複数人が短い間隔で連続して
+  // 上がったとき、後ろの人のバナーが自分の上がりの手の表示から何秒も
+  // 遅れてしまう（1つ 1500ms × 待ち人数ぶん）。そこで「あがり演出の
+  // 待ち人数」「表示キューの遅れ（未表示の手数）」「その上がりが何手前の
+  // ものか（lagPlays）」を見て、溜まっているときほど短くする。
+  const durForBanner = (b: FxBanner): number => {
+    const waitingFinish =
+      queueRef.current.filter((x) => x.kind === "finish").length +
+      pendingFinishRef.current.length;
+    const revealLag = historyRef.current.length - dispRef.current.length;
+    if (b.kind === "finish") {
+      let d = 1500;
+      if (waitingFinish >= 2 || revealLag >= 6) d = 850;
+      else if (waitingFinish >= 1 || revealLag >= 3) d = 1100;
+      // 何手も進んでから出る古い上がりは短めに（名前と称号は出す）。
+      if ((b.lagPlays ?? 0) >= 2) d = Math.min(d, 900);
+      return d;
+    }
+    // 効果バナー: あがり演出が控えている間は短くし、あがりを先に出す。
+    if (waitingFinish > 0) return 600;
+    if (revealLag >= 6) return 750;
+    return 1180;
+  };
+  const showBanner = (b: FxBanner) => {
+    bannerRef.current = b;
+    const d = durForBanner(b);
+    bannerDurRef.current = d;
+    setBannerDur(d);
+    setBanner(b);
+    setBannerSeq((s) => s + 1);
+  };
   const startNextBannerIfIdle = () => {
     if (bannerRef.current) return;
     const nxt = queueRef.current.shift();
+    if (nxt) showBanner(nxt);
+  };
+  const advanceBanner = () => {
+    const nxt = queueRef.current.shift() ?? null;
+    bannerRef.current = nxt;
     if (nxt) {
-      bannerRef.current = nxt;
+      const d = durForBanner(nxt);
+      bannerDurRef.current = d;
+      setBannerDur(d);
       setBanner(nxt);
       setBannerSeq((s) => s + 1);
+    } else {
+      setBanner(null);
     }
+    syncFinishHold();
   };
+  const advanceRef = useRef(advanceBanner);
+  advanceRef.current = advanceBanner;
   const pushBanners = (bs: FxBanner[]) => {
     const reduced = prefersReducedMotion();
     for (const b of bs) {
@@ -1631,10 +1748,18 @@ function Board({
         !queueRef.current.some((x) => keyOf(x) === keyOf(b)),
     );
     if (fresh.length > 0) {
+      // あがり演出を優先し、表示待ちの効果バナーは間引く（上がりの手の
+      // 効果は場のカードの注記とログにも残るので、意味は失われない）。
+      queueRef.current = queueRef.current.filter((x) => x.kind === "finish");
       // 複数人分は順位順（呼び出し側でソート済み）を保ったまま先頭へ。
       queueRef.current.unshift(...fresh);
     }
-    startNextBannerIfIdle();
+    if (bannerRef.current && bannerRef.current.kind !== "finish") {
+      // 効果バナーを表示中なら残り時間を待たず、あがり演出へ即切り替える。
+      advanceRef.current();
+    } else {
+      startNextBannerIfIdle();
+    }
     syncFinishHold();
   };
   const pushFinishRef = useRef(pushFinishBanners);
@@ -1643,13 +1768,12 @@ function Board({
   useEffect(() => {
     syncFinishHold();
     if (!banner) return;
+    const forBanner = banner;
     const t = window.setTimeout(() => {
-      const nxt = queueRef.current.shift() ?? null;
-      bannerRef.current = nxt;
-      setBanner(nxt);
-      if (nxt) setBannerSeq((s) => s + 1);
-      syncFinishHold();
-    }, banner.kind === "finish" ? 1500 : 1180);
+      // 予約したバナーがすでに切り替わっていたら何もしない
+      // （あがり演出の割り込みで即切り替えされた場合の二重進行防止）。
+      if (bannerRef.current === forBanner) advanceRef.current();
+    }, bannerDurRef.current);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [banner]);
@@ -1711,6 +1835,7 @@ function Board({
         rankPos: f.rank,
         avatar: f.avatar,
         tone: "gold" as const,
+        lagPlays: Math.max(0, dispRef.current.length - f.atDisp),
       })),
     );
   };
@@ -1842,6 +1967,7 @@ function Board({
             <div
               key={bannerSeq}
               className="finish-banner gold-frame rounded-3xl bg-[#0a2e1c]/95 px-8 py-5 text-center shadow-2xl"
+              style={{ animationDuration: `${bannerDur}ms` }}
             >
               <div className="flex items-center justify-center gap-2.5">
                 {banner.avatar && (
@@ -1882,6 +2008,7 @@ function Board({
             <div
               key={bannerSeq}
               className={`effect-banner rounded-2xl border-[3px] bg-[#0a2e1c]/95 px-7 py-3.5 text-center shadow-2xl ${BANNER_TONE[banner.tone]}`}
+              style={{ animationDuration: `${bannerDur}ms` }}
             >
               <p
                 className="text-4xl sm:text-5xl font-extrabold tracking-wide"
@@ -4072,7 +4199,7 @@ function LocalGame({
               }
             />
           </button>
-          <div className={`pt-[84px] ${myTurnActive ? "my-turn-hand" : ""}`}>
+          <div className={`pt-[62px] ${myTurnActive ? "my-turn-hand" : ""}`}>
             <FanHand
               cards={viewer.hand}
               selected={selected}
@@ -5867,7 +5994,7 @@ function OnlineGame({
               }
             />
           </button>
-          <div className={`pt-[84px] ${myTurnActiveOnline ? "my-turn-hand" : ""}`}>
+          <div className={`pt-[62px] ${myTurnActiveOnline ? "my-turn-hand" : ""}`}>
             <FanHand
               cards={view.myHand}
               selected={selected}
