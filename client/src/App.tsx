@@ -1508,6 +1508,11 @@ function Board({
     total: number;
     avatar: string | null;
     atDisp: number;
+    /** 手札を出し切らずに順位が確定した人（最後の1人の自動確定、
+     * 都落ち・下剋上・全員パス終了で巻き込まれた人）。「上がりの手」が
+     * 存在しないため、発火位置は履歴末尾に固定し、対局の最後の演出に
+     * なるよう保証する（検知側のコメント参照）。 */
+    auto: boolean;
   };
   const [pendingFinishes, setPendingFinishes] = useState<PendingFinish[]>([]);
   const pendingFinishRef = useRef<PendingFinish[]>([]);
@@ -1851,9 +1856,20 @@ function Board({
     // 演出は必ず流す（最後の1人の自動確定など、対応する手が無い決着で
     // atDisp が届かなくなるケースへの保険）。
     const caughtUpNow = dispRef.current.length >= historyRef.current.length;
-    const ready = pend
-      .filter((f) => f.atDisp <= dispRef.current.length || caughtUpNow)
-      .sort((a, b) => a.rank - b.rank);
+    // 発火は「発火位置 → 順位」の順に並べた先頭から、位置に届いた
+    // 連続分だけに限る。途中の1人でもまだ届いていなければ、後続は
+    // 自分の位置に届いていても流さない。これにより、自動確定の
+    // 最下位が（発火位置の計算違いなどで）実際に上がった貧民より
+    // 先に出てしまうことがなくなり、演出は常に実際の上がり順
+    // （自動確定は最後）になる。
+    const ordered = [...pend].sort(
+      (a, b) => a.atDisp - b.atDisp || a.rank - b.rank,
+    );
+    const ready: PendingFinish[] = [];
+    for (const f of ordered) {
+      if (f.atDisp <= dispRef.current.length || caughtUpNow) ready.push(f);
+      else break;
+    }
     if (ready.length === 0) return;
     setPending(pend.filter((f) => !ready.includes(f)));
     // 末尾ではなくキューの先頭へ割り込ませる（pushFinishBanners 参照）。
@@ -1912,15 +1928,25 @@ function Board({
       // ときにだけ演出が出る」状態になっていた（不具合の主因）。
       // 都落ち・下剋上など原因の手と同時に確定した人も、自分の最後の手が
       // 表示される時点で出す（順位はその時点で席にも表示されている）。
+      // ただし、手札を出し切らずに確定した人（auto）は例外: 最後の1人の
+      // 自動確定（大貧民）は、自分の最後の手が「対局を終わらせた貧民の
+      // 上がり」より前にあることが普通で、その位置で発火させると貧民より
+      // 先に演出が出てしまう（今回の不具合）。auto の発火位置は履歴末尾
+      // （＝対局を終わらせた最後の上がりの手以降）に固定し、表示キューが
+      // 全手に追いつくまで出さない。flush 側の先頭連続ルールと合わせ、
+      // 「貧民 → 大貧民」の順（自動確定は常に対局最後）を保証する。
+      // 表示する順位・称号はエンジン確定済みの値をそのまま使う。
       const add: PendingFinish[] = fresh.map((p) => {
         shownFinishRef.current.add(p.id);
+        const auto = p.cardCount > 0;
         return {
           playerId: p.id,
           name: p.name,
           rank: p.finishRank!,
           total: players.length,
           avatar: p.avatar ?? null,
-          atDisp: atOf(p.id),
+          atDisp: auto ? hist.length : atOf(p.id),
+          auto,
         };
       });
       setPending([...pendingFinishRef.current, ...add]);
@@ -4544,6 +4570,33 @@ function ChatSheet({
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
+  // キーボード対応: visualViewport を監視し、シートをキーボードの上に
+  // 配置する（入力欄がキーボードに隠れない）。シートの高さは「見えて
+  // いる画面」の割合で制限するので、キーボード表示中でも画面上部に
+  // 対局（席・場・手番の発光）が見える余地が残る。
+  const [vv, setVv] = useState<{ h: number; inset: number } | null>(null);
+  useEffect(() => {
+    const vp = window.visualViewport;
+    if (!vp) return;
+    const update = () => {
+      const inset = Math.max(
+        0,
+        window.innerHeight - vp.height - vp.offsetTop,
+      );
+      setVv({ h: vp.height, inset });
+    };
+    update();
+    vp.addEventListener("resize", update);
+    vp.addEventListener("scroll", update);
+    return () => {
+      vp.removeEventListener("resize", update);
+      vp.removeEventListener("scroll", update);
+    };
+  }, []);
+  const keyboardOpen = vv !== null && vv.inset > 0;
+  const sheetMaxH = vv
+    ? Math.round(vv.h * (keyboardOpen ? 0.52 : 0.46))
+    : undefined;
   // 送信履歴は localStorage が正本。開くたびに読み直し、自分の送信が
   // 成功して sending が落ちたタイミングでも読み直して最新化する
   // （記録は送信成功時に OnlineRoom 側で行う）。
@@ -4564,17 +4617,25 @@ function ChatSheet({
       className="fixed inset-0 z-[80] flex flex-col justify-end"
       role="dialog"
       aria-label="チャット"
+      style={
+        keyboardOpen && vv ? { paddingBottom: `${vv.inset}px` } : undefined
+      }
     >
+      {/* 背景は暗くしない: シートより上は透明な「タップで閉じる」領域だけにし、
+          入力中も席・場・手番の発光がそのまま見えるようにする。 */}
       <button
         type="button"
         aria-label="チャットを閉じる"
-        className="absolute inset-0 bg-black/55"
+        className="absolute inset-0 bg-transparent"
         style={{ minHeight: 0 }}
         onClick={onClose}
       />
       <div
-        className="panel-in relative mx-auto flex max-h-[74dvh] w-full max-w-lg flex-col rounded-t-3xl border-t-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
-        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+        className="panel-in relative mx-auto flex max-h-[46dvh] w-full max-w-lg flex-col rounded-t-3xl border-t-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
+        style={{
+          paddingBottom: "env(safe-area-inset-bottom, 0px)",
+          ...(sheetMaxH ? { maxHeight: `${sheetMaxH}px` } : {}),
+        }}
       >
         <div className="flex items-center justify-between px-4 pt-3 pb-1">
           <p className="font-extrabold text-[#ffe9a8]">チャット</p>
@@ -4590,10 +4651,10 @@ function ChatSheet({
         </div>
         <div
           ref={listRef}
-          className="min-h-[160px] flex-1 space-y-2 overflow-y-auto px-3 py-2"
+          className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-2"
         >
           {messages.length === 0 ? (
-            <p className="py-8 text-center text-sm font-bold text-white/60">
+            <p className="py-4 text-center text-sm font-bold text-white/60">
               まだメッセージはありません
             </p>
           ) : (
@@ -4626,7 +4687,7 @@ function ChatSheet({
             <p className="text-[11px] font-bold text-white/55">
               送信履歴（タップで再送信）
             </p>
-            <div className="mt-1.5 flex max-h-[92px] flex-wrap gap-1.5 overflow-y-auto pb-1">
+            <div className="mt-1.5 flex max-h-[60px] flex-wrap gap-1.5 overflow-y-auto pb-1">
               {history.map((t) => (
                 <span
                   key={t}
