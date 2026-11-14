@@ -4597,31 +4597,49 @@ function ChatSheet({
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
-  // パネルは画面上部に固定され、下へ伸びて開く。visualViewport を監視し、
-  // パネルの高さを「見えている画面」の割合で制限する（パネルの下に場が
-  // 見える余地を残す）。キーボード表示中もパネルは上部に留まり、位置は
-  // 変えない（キーボードは画面下部に被さるだけ）。入力欄は常にパネルの
-  // 中にあり、独立して浮くことはない。
-  const [vvH, setVvH] = useState<number | null>(null);
+  // パネルは画面上部に固定され、下へ伸びて開く。高さの上限は、対局画面
+  // の高さ固定と同じ「凍結済み高さ」（キーボード無し時点の高さ。--svh1
+  // 相当）を基準に決める。visualViewport の現在値をそのまま使うと、
+  // キーボードで見える範囲が縮むたびに上限も縮み、パネルの緑の背景まで
+  // 小さくなってしまう（dvh 基準も同じ）。そのため、入力中・幅不変・
+  // 縮小方向の変化はキーボード起因とみなして無視し、拡大方向（キーボード
+  // を閉じた／バーが隠れた）と回転（幅の変化）だけを受け入れる。
+  // キーボード表示中もパネルは上部に留まり、大きさは変わらない
+  // （キーボードは画面下部に被さるだけ）。入力欄は常にパネルの中にある。
+  const [baseH, setBaseH] = useState<number | null>(null);
   useEffect(() => {
     const vp = window.visualViewport;
     if (!vp) return;
-    const update = () => setVvH(vp.height);
+    let lastWidth = window.innerWidth;
+    let appliedH = Math.round(vp.height);
+    const update = () => {
+      const ae = document.activeElement;
+      const typing =
+        ae instanceof HTMLInputElement || ae instanceof HTMLTextAreaElement;
+      const widthChanged = window.innerWidth !== lastWidth;
+      const h = Math.round(vp.height);
+      if (typing && !widthChanged && h < appliedH) return;
+      lastWidth = window.innerWidth;
+      appliedH = h;
+      setBaseH(h);
+    };
     update();
     vp.addEventListener("resize", update);
     vp.addEventListener("scroll", update);
+    window.addEventListener("orientationchange", update);
     return () => {
       vp.removeEventListener("resize", update);
       vp.removeEventListener("scroll", update);
+      window.removeEventListener("orientationchange", update);
     };
   }, []);
   // 入力欄のフォーカス状態は、後述のスクロール固定（フォーカス時の
   // ブラウザ自動スクロール抑制）にだけ使う。入力欄は常にこの1つだけで、
   // シートの中（履歴の下）に置く。
   const [inputFocused, setInputFocused] = useState(false);
-  // パネルの高さは「見えている画面」の46%まで。キーボード表示中も
-  // パネルは上部に留まり、キーボードに押し上げられたりはしない。
-  const sheetMaxH = vvH ? Math.round(vvH * 0.46) : undefined;
+  // パネルの高さは凍結済み高さの46%まで。キーボード表示中もパネルは
+  // 上部に留まり、キーボードに押し上げられたり縮んだりはしない。
+  const sheetMaxH = baseH ? Math.round(baseH * 0.46) : undefined;
   // 入力欄をタップした瞬間にブラウザがフォーカス中の入力欄を画面内へ
   // 入れようとしてページ全体を自動スクロールさせる（実機では「画面が
   // 一番上まで飛ぶ」）ことがある。対局画面は元々スクロールしない前提
@@ -4710,7 +4728,7 @@ function ChatSheet({
         onClick={onClose}
       />
       <div
-        className="panel-in-top relative mx-auto flex max-h-[46dvh] w-full max-w-lg flex-col rounded-b-3xl border-b-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
+        className="panel-in-top relative mx-auto flex max-h-[46svh] w-full max-w-lg flex-col rounded-b-3xl border-b-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
         style={{
           paddingTop: "env(safe-area-inset-top, 0px)",
           ...(sheetMaxH ? { maxHeight: `${sheetMaxH}px` } : {}),
@@ -4820,7 +4838,7 @@ function ChatSheet({
             maxLength={200}
             placeholder="メッセージを入力（200文字まで）"
             aria-label="チャットメッセージ"
-            className="min-w-0 flex-1 rounded-xl border border-white/25 bg-black/30 px-3 py-2 font-bold text-white placeholder:text-white/40"
+            className="min-w-0 flex-1 rounded-xl border border-[#d8b25c]/60 bg-[#0d3524] px-3 py-2 font-bold text-white placeholder:text-white/60"
           />
           <button
             type="button"
