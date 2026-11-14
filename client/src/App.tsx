@@ -1338,9 +1338,6 @@ interface FxBanner {
   avatar?: string | null;
   /** 重複排除キー（称号が同じ平民どうしでも1人ずつ表示するため）。 */
   dedupeKey?: string;
-  /** あがり演出用: バナー投入時点で、上がりの手から表示が何手進んでいたか。
-   * 大きいほど「古い上がり」なので表示時間を短くする。 */
-  lagPlays?: number;
 }
 
 const BANNER_TONE: Record<FxBanner["tone"], string> = {
@@ -1559,9 +1556,11 @@ function Board({
       setDisp(next);
       // 追いつき再生が大きく遅れているとき（対局終了後の一括到着など）は
       // 歩調を速める。遅れが残ると、ログで先に結果が見えているのに
-      // あがり演出だけが何秒も後から出る状態になるため。
+      // あがり演出だけが何秒も後から出る状態になるため。高速化はこの
+      // 再生間隔の短縮だけで行い、あがり演出の表示時間は縮めない。
       const remain = target.length - next.length;
-      const delay = remain >= 8 ? 300 : remain >= 4 ? 430 : STEP_MS;
+      const delay =
+        remain >= 16 ? 200 : remain >= 8 ? 300 : remain >= 4 ? 430 : STEP_MS;
       stepTimer.current = window.setTimeout(step, delay);
     };
     if (initialDelay > 0) {
@@ -1582,7 +1581,10 @@ function Board({
     dispRef.current = [];
     setDisp([]);
     setGhost(null);
-    setPending([]);
+    // 未表示のあがり演出は消さない: 次ゲームの開始に間に合わず残って
+    // いた分は、発火位置を先頭へ寄せて新ゲームの再生開始直後に出す
+    // （ここで捨てると「上がったのに演出が一度も出ない」ことがある）。
+    setPending(pendingFinishRef.current.map((f) => ({ ...f, atDisp: 0 })));
     shownFinishRef.current = new Set();
     baselineFinishRef.current = new Set();
     baselineDoneRef.current = false;
@@ -1609,8 +1611,10 @@ function Board({
       dispRef.current = [];
       setDisp([]);
       // 履歴が巻き戻るのは新しいゲームの開始だけ（履歴は追記のみ）。
-      // あがり演出の管理も新しいゲーム用に初期化し直す。
-      setPending([]);
+      // 未表示のあがり演出は捨てず、発火位置を先頭へ寄せて引き継ぐ
+      // （リセットで消すと、追いつき再生の途中で次ゲームが始まった
+      // クライアントでは演出が一度も出ないままになるため）。
+      setPending(pendingFinishRef.current.map((f) => ({ ...f, atDisp: 0 })));
       shownFinishRef.current = new Set();
       baselineFinishRef.current = new Set();
       baselineDoneRef.current = false;
@@ -1681,8 +1685,8 @@ function Board({
   const bannerRef = useRef<FxBanner | null>(null);
   const [banner, setBanner] = useState<FxBanner | null>(null);
   const [bannerSeq, setBannerSeq] = useState(0);
-  // 表示中のバナーの表示時間（ms）。バナーが溜まっているときは短くなる
-  // （durForBanner）。CSSアニメーションの再生時間もこれに合わせる。
+  // 表示中のバナーの表示時間（ms）。あがり演出は常に 1500ms、効果バナーは
+  // 状況で短くなる（durForBanner）。CSSアニメーションの再生時間も合わせる。
   const bannerDurRef = useRef(1500);
   const [bannerDur, setBannerDur] = useState(1500);
   // 順次表示を止める条件: あがり演出が「表示中」の間だけでなく、キューで
@@ -1693,24 +1697,20 @@ function Board({
       bannerRef.current?.kind === "finish" ||
       queueRef.current.some((b) => b.kind === "finish");
   };
-  // バナー1つの表示時間。固定時間だと、終盤に複数人が短い間隔で連続して
-  // 上がったとき、後ろの人のバナーが自分の上がりの手の表示から何秒も
-  // 遅れてしまう（1つ 1500ms × 待ち人数ぶん）。そこで「あがり演出の
-  // 待ち人数」「表示キューの遅れ（未表示の手数）」「その上がりが何手前の
-  // ものか（lagPlays）」を見て、溜まっているときほど短くする。
+  // バナー1つの表示時間。あがり演出は「表示キューがその人の上がりの手に
+  // 到達した時点」で発火するのが前提なので、エンジン側が何手先に進んで
+  // いても・何人待ちでも短縮しない（常に通常の 1500ms）。以前はエンジン
+  // の最新状態を基準に「古い上がり」を測って 850/1100ms に縮めていたが、
+  // オンラインではサーバーが CPU の手を一気に進めるため、途中の上がりが
+  // 常に「古い」扱いになり、演出が目立たない・出ない主因になっていた。
+  // 追いつきの高速化はバナーを縮めるのではなく、順次表示の間隔短縮
+  // （startStepping 側）で対応する。
   const durForBanner = (b: FxBanner): number => {
+    if (b.kind === "finish") return 1500;
     const waitingFinish =
       queueRef.current.filter((x) => x.kind === "finish").length +
       pendingFinishRef.current.length;
     const revealLag = historyRef.current.length - dispRef.current.length;
-    if (b.kind === "finish") {
-      let d = 1500;
-      if (waitingFinish >= 2 || revealLag >= 6) d = 850;
-      else if (waitingFinish >= 1 || revealLag >= 3) d = 1100;
-      // 何手も進んでから出る古い上がりは短めに（名前と称号は出す）。
-      if ((b.lagPlays ?? 0) >= 2) d = Math.min(d, 900);
-      return d;
-    }
     // 効果バナー: あがり演出が控えている間は短くし、あがりを先に出す。
     if (waitingFinish > 0) return 600;
     if (revealLag >= 6) return 750;
@@ -1866,7 +1866,6 @@ function Board({
         rankPos: f.rank,
         avatar: f.avatar,
         tone: "gold" as const,
-        lagPlays: Math.max(0, dispRef.current.length - f.atDisp),
       })),
     );
   };
@@ -1906,8 +1905,13 @@ function Board({
         }
         return hist.length;
       };
-      // 同時確定は原因となった手の位置にそろえる（一番遅い位置を採用）。
-      const batchAt = Math.max(...fresh.map((p) => atOf(p.id)));
+      // 発火位置は「その人自身の上がりの手」の位置にする。全員分を一番
+      // 遅い位置へそろえる（旧 batchAt 方式）と、オンラインで複数人の
+      // 上がりが1回のポーリングにまとめて届いたとき、最初の人の演出まで
+      // 表示キューがほぼ全手を再生し終わるまで発火せず、「全員上がった
+      // ときにだけ演出が出る」状態になっていた（不具合の主因）。
+      // 都落ち・下剋上など原因の手と同時に確定した人も、自分の最後の手が
+      // 表示される時点で出す（順位はその時点で席にも表示されている）。
       const add: PendingFinish[] = fresh.map((p) => {
         shownFinishRef.current.add(p.id);
         return {
@@ -1916,7 +1920,7 @@ function Board({
           rank: p.finishRank!,
           total: players.length,
           avatar: p.avatar ?? null,
-          atDisp: batchAt,
+          atDisp: atOf(p.id),
         };
       });
       setPending([...pendingFinishRef.current, ...add]);
