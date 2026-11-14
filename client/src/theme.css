@@ -298,6 +298,13 @@
 }
 .panel-in { animation: panel-in 0.25s ease-out both; }
 
+/* 上部固定パネル用: 上から下へ滑り降りて開く */
+@keyframes panel-in-top {
+  from { opacity: 0; transform: translateY(-14px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.panel-in-top { animation: panel-in-top 0.25s ease-out both; }
+
 @keyframes chat-banner-anim {
   from { opacity: 0; transform: translateY(-10px); }
   to { opacity: 1; transform: translateY(0); }
@@ -342,7 +349,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .card-pop, .chip-pop, .pile-exit, .turn-ring, .turn-glow, .panel-in, .chat-banner-in, .effect-banner, .finish-banner, .result-row, .deck-pulse, .my-turn-banner, .seat-gather, .seat-settle, .shuffle-banner { animation: none !important; }
+  .card-pop, .chip-pop, .pile-exit, .turn-ring, .turn-glow, .panel-in, .panel-in-top, .chat-banner-in, .effect-banner, .finish-banner, .result-row, .deck-pulse, .my-turn-banner, .seat-gather, .seat-settle, .shuffle-banner { animation: none !important; }
   /* 手番の席枠はモーション抑制時も静止した強いグローで示す */
   .turn-glow { box-shadow: 0 0 0 3px rgba(255,224,130,1), 0 0 26px 10px rgba(255,205,80,0.85), 0 0 44px 16px rgba(255,180,40,0.4); }
   /* あがり演出はモーション抑制時も静止画として表示する（JSタイマーで消す） */
