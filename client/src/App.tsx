@@ -4596,9 +4596,9 @@ function ChatSheet({
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
-  // キーボード対応: visualViewport を監視し、シートをキーボードの上に
-  // 配置する（入力欄がキーボードに隠れない）。シートの高さは「見えて
-  // いる画面」の割合で制限するので、キーボード表示中でも画面上部に
+  // キーボード対応: visualViewport を監視し、キーボード表示中は入力
+  // フォームを場付近に浮かせる位置（floatBarBottom）を決める。シートの
+  // 高さは「見えている画面」の割合で制限するので、通常表示でも画面上部に
   // 対局（席・場・手番の発光）が見える余地が残る。
   const [vv, setVv] = useState<{ h: number; inset: number } | null>(null);
   useEffect(() => {
@@ -4620,11 +4620,12 @@ function ChatSheet({
     };
   }, []);
   // 入力欄にフォーカスしていて、見えている画面の高さが大きく縮んだら
-  // 「キーボード表示中」とみなす。この間はシート表示をやめ、キーボードの
-  // 真上に浮く入力バー（入力欄＋送信＋閉じる）だけにする: 背景・タイトル・
-  // 履歴はすべて消え、背後は透明で対局がそのまま見える。入力欄の要素
-  // 自体は常駐させたまま周りの表示だけ切り替える（作り直すとフォーカスが
-  // 外れてキーボードが閉じてしまうため）。
+  // 「キーボード表示中」とみなす。この間はシート表示をやめ、入力フォーム
+  // だけをシートの流れから切り離して、場の下寄り〜画面中央付近に半透明の
+  // バーとして独立に浮かせる（入力欄＋送信＋閉じる）: 背景・タイトル・
+  // 履歴はすべて消え、バーの向こうに場のカードがうっすら透ける。入力欄の
+  // 要素自体は常駐させたまま配置だけ切り替える（作り直すとフォーカスが
+  // 外れてキーボードが閉じてしまうため）し、入力欄は常にこの1つだけ。
   const [inputFocused, setInputFocused] = useState(false);
   const keyboardOpen =
     inputFocused &&
@@ -4632,6 +4633,11 @@ function ChatSheet({
     (vv.inset > 60 || window.innerHeight - vv.h > 120);
   const sheetMaxH =
     vv && !keyboardOpen ? Math.round(vv.h * 0.46) : undefined;
+  // 浮動バーの下端位置（レイアウト座標の下から）: キーボードの上端から、
+  // 見えている高さの約16%分だけ上に置く。対局画面の場の下寄り〜画面
+  // 中央付近に重なる位置で、シートのせり上がりとは独立に決まる。
+  const floatBarBottom =
+    vv && keyboardOpen ? vv.inset + Math.round(vv.h * 0.16) : undefined;
   // 入力欄をタップした瞬間にブラウザがフォーカス中の入力欄を画面内へ
   // 入れようとしてページ全体を自動スクロールさせる（実機では「画面が
   // 一番上まで飛ぶ」）ことがある。対局画面は元々スクロールしない前提
@@ -4710,9 +4716,6 @@ function ChatSheet({
       className="fixed inset-0 z-[80] flex flex-col justify-end"
       role="dialog"
       aria-label="チャット"
-      style={
-        keyboardOpen && vv ? { paddingBottom: `${vv.inset}px` } : undefined
-      }
     >
       {/* 背景は暗くしない: シートより上は透明な「タップで閉じる」領域だけにし、
           入力中も席・場・手番の発光がそのまま見えるようにする。 */}
@@ -4724,10 +4727,10 @@ function ChatSheet({
         onClick={onClose}
       />
       <div
-        className={`panel-in relative mx-auto flex w-full max-w-lg flex-col${
+        className={`relative mx-auto flex w-full max-w-lg flex-col${
           keyboardOpen
-            ? " bg-transparent"
-            : " max-h-[46dvh] rounded-t-3xl border-t-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
+            ? " pointer-events-none bg-transparent"
+            : " panel-in max-h-[46dvh] rounded-t-3xl border-t-2 border-[#d8b25c] bg-[#07331a] shadow-2xl"
         }`}
         style={{
           paddingBottom: "env(safe-area-inset-bottom, 0px)",
@@ -4820,8 +4823,15 @@ function ChatSheet({
         )}
         <form
           className={`flex items-center gap-2 ${
-            keyboardOpen ? "px-3 pt-1 pb-2" : "border-t border-white/15 p-3"
+            keyboardOpen
+              ? "pointer-events-auto fixed left-1/2 w-[calc(100%-1.5rem)] max-w-lg -translate-x-1/2 rounded-2xl border border-white/35 bg-[#04170f]/85 px-3 py-2 shadow-2xl"
+              : "border-t border-white/15 p-3"
           }`}
+          style={
+            floatBarBottom !== undefined
+              ? { bottom: `${floatBarBottom}px` }
+              : undefined
+          }
           onSubmit={(e) => {
             e.preventDefault();
             commitSend();
